@@ -66,7 +66,7 @@ codex-switch use
 Selection has two phases:
 
 1. **Eligibility** excludes candidates with exhausted 5h or 7d windows, critically low weekly headroom with a distant reset, or an unsafe Free-plan balance.
-2. **Scoring** ranks the eligible candidates by tier preference (Team accounts get priority by default), pace-aware 5h headroom, weekly sustainability, quota that is close to resetting, and recent use.
+2. **Scoring** ranks the eligible candidates by tier preference (Team accounts get priority only with `[use] team_priority = true`), pace-aware 5h headroom, weekly sustainability, quota that is close to resetting, and recent use.
 
 If every account is ineligible, the best fallback is reported instead of pretending an account is healthy.
 
@@ -76,7 +76,7 @@ On Windows the private-write path reads a directory's protected ACL first and re
 
 ## Launch Codex with a profile
 
-`launch` selects or stages a profile, starts Codex, then restores the previous live authentication after the configured compatibility delay:
+`launch` selects a profile and starts Codex in that account's own Codex home, `$CODEX_SWITCH_HOME/homes/<alias>/`. The shared `$CODEX_HOME/auth.json` is never touched, so several terminals can run different accounts at the same time, and one session always uses one account:
 
 In the TUI Accounts page or account menu, `o` opens the same launch picker used by providers. `(Codex default)` adds no model or reasoning override; cached account models can supply a one-shot model and reasoning effort, and the picker also accepts extra Codex arguments.
 
@@ -89,7 +89,11 @@ codex-switch launch -- -s workspace-write -a never
 
 Arguments after `--` are Codex's, not codex-switch's. A known Codex subcommand (`exec`, `resume`, …) can start the argv without `--` (`codex-switch launch exec --json "…"`). Tokens on both sides of `--` are kept. The separator is still required when the Codex argv starts with a prompt that looks like an alias, or a flag that also exists on codex-switch (`--json`, `--color`, `--model`) immediately after the alias. Current Codex has no `--full-auto`; use `-a never`, `--sandbox`, or `--dangerously-bypass-approvals-and-sandbox`. `--json launch` prints one JSON object after Codex exits and captures at most 1 MiB from each Codex output stream; the corresponding `*_truncated` fields report clipping.
 
-The launch lock serializes overlapping launch sessions. The restore delay is configurable (`launch.restore_delay_secs`) because Codex does not expose an authentication-read handshake. When the installed Codex lists `--no-daemon` (0.156 and newer), a ChatGPT launch adds it so the session reads the staged file instead of joining the shared app-server daemon, which would keep the account it already holds; an argv that already contains `--no-daemon`, `--remote`, or `agents` is passed through unchanged. The `codex --help` probe that decides this is bounded to 10 seconds; if routing cannot be determined, launch refuses before staging any credentials rather than risk running the session on the wrong account.
+The account home's `auth.json` is a symlink to the saved profile. Codex rewrites that file in place when it refreshes tokens and reloads it before refreshing or after a 401, so a rotation made by Codex reaches the profile and a rotation made by codex-switch (for example during `list`) reaches the running session; a single-use refresh token is never stranded in a stale copy. When the launched account is also the current `use` account, codex-switch reconciles the profile with the live `auth.json` every few seconds while Codex runs (same account only; the later `last_refresh` wins), so plain `codex` on that account stays usable too.
+
+User content stays shared. These entries of the shared Codex home are linked into every account home: `config.toml`, `AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `history.jsonl`, `session_index.jsonl`, `.credentials.json`, native `*.config.toml` profiles, and the directories `sessions`, `archived_sessions`, `skills`, `plugins`, `prompts`, `rules`, `agents`, `themes`, `memories*`, `worktrees`, `thread-writer-locks`, `rollout-migrations` and `.tmp` (plugin caches and rollout maintenance locks). `CODEX_SQLITE_HOME` is set to the shared home unless you set it yourself, so the SQLite state databases are shared as well, and a session started under one account can be resumed under another with `codex-switch launch <other> -- resume <id>`. Add more entries with `[launch] shared_paths`. The app-server daemon socket, PATH helpers in `tmp/`, the model cache, shell snapshots and logs stay per account. A real file or directory placed in an account home where a link would go is kept as a per-account override. If `codex logout` and `codex login` were run inside an account home, the next launch folds a newer login for the same account back into the profile and refuses a different account. Account homes use symlinks, which on Windows require Developer Mode or an elevated shell.
+
+When the installed Codex lists `--no-daemon` (0.156 and newer), a ChatGPT launch adds it so the session runs in process and exits with the terminal instead of leaving a per-account app-server daemon behind; an argv that already contains `--no-daemon`, `--remote`, or `agents` is passed through unchanged. The `codex --help` probe that decides this is bounded to 10 seconds; if it cannot be determined, launch refuses before starting Codex.
 
 ## Launch Codex with a custom API provider
 

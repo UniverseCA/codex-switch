@@ -2019,12 +2019,12 @@ mod tests {
             .unwrap();
         let rendered = row_text(terminal.backend(), 0);
         assert!(rendered.contains("0.154.0"), "{rendered}");
-        assert!(rendered.contains("0.159.2"), "{rendered}");
+        assert!(rendered.contains("0.165.0"), "{rendered}");
         assert!(!rendered.contains("Usage refresh finished"), "{rendered}");
 
         app.codex_path_version = Some(crate::codex_compat::VersionReport {
             executable: Some("C:/codex.exe".into()),
-            version: Some("0.159.2".into()),
+            version: Some("0.165.0".into()),
             status: crate::codex_compat::CompatibilityStatus::Aligned,
             note: None,
         });
@@ -2079,7 +2079,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("0.154.0"), "{rendered}");
-        assert!(rendered.contains("0.159.2"), "{rendered}");
+        assert!(rendered.contains("0.165.0"), "{rendered}");
         assert!(
             rendered.contains("npm install -g @openai/codex@latest"),
             "{rendered}"
@@ -2127,7 +2127,7 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("UPGRADE REQUIRED"), "{rendered}");
         assert!(rendered.contains("0.154.0"), "{rendered}");
-        assert!(rendered.contains("0.159.2"), "{rendered}");
+        assert!(rendered.contains("0.165.0"), "{rendered}");
         assert!(
             rendered.contains("npm install -g @openai/codex@latest"),
             "{rendered}"
@@ -2264,7 +2264,6 @@ mod tests {
                 "use.safety_margin_7d",
                 "use.team_priority",
                 "use.restart_app_server",
-                "launch.restore_delay_secs",
             ] {
                 assert!(
                     joined.contains(label),

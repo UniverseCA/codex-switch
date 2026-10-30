@@ -881,7 +881,7 @@ mod tests {
             unreachable!();
         };
         info.codex_upgrade_instructions = Some(vec![
-            "UPGRADE REQUIRED: PATH CLI 0.154.0 < minimum 0.159.2.".into(),
+            "UPGRADE REQUIRED: PATH CLI 0.154.0 < minimum 0.165.0.".into(),
             "Upgrade using your original installation method.".into(),
             "npm example (same Node.js/fnm environment):".into(),
             "npm install -g @openai/codex@latest".into(),
@@ -906,7 +906,7 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("UPGRADE REQUIRED"), "{rendered}");
         assert!(rendered.contains("0.154.0"), "{rendered}");
-        assert!(rendered.contains("0.159.2"), "{rendered}");
+        assert!(rendered.contains("0.165.0"), "{rendered}");
         assert!(
             rendered.contains("npm install -g @openai/codex@latest"),
             "{rendered}"

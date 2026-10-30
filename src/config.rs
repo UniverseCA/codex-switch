@@ -37,13 +37,15 @@ impl AppConfig {
             ));
             self.tui.auto_refresh_interval_secs = 30;
         }
-        // Not merely a tidy default: at zero, `launch` restores the original
-        // auth.json before Codex has read the staged one, so the session runs
-        // on the wrong account with nothing reporting it.
-        if self.launch.restore_delay_secs == 0 {
-            warnings.push("config.launch.restore_delay_secs=0 is invalid; using 3 instead".into());
-            self.launch.restore_delay_secs = 3;
-        }
+        self.launch.shared_paths.retain(|name| {
+            match crate::account_home::validate_shared_name(name) {
+                Ok(()) => true,
+                Err(error) => {
+                    warnings.push(format!("config: {error}; ignoring it"));
+                    false
+                }
+            }
+        });
         self
     }
 }
@@ -103,7 +105,8 @@ impl Default for TuiConfig {
 pub struct UseConfig {
     /// 7d safety margin: when 7d remaining% falls below this, a scoring penalty kicks in (default: 20)
     pub safety_margin_7d: f64,
-    /// Prioritize Team plan accounts (default: true)
+    /// Prioritize Team plan accounts (default: false, so selection balances
+    /// purely on quota)
     pub team_priority: bool,
     /// Restart a running Codex app-server daemon after the live auth.json
     /// changes, so new sessions use the switched account (default: true).
@@ -115,27 +118,20 @@ impl Default for UseConfig {
     fn default() -> Self {
         Self {
             safety_margin_7d: 20.0,
-            team_priority: true,
+            team_priority: false,
             restart_app_server: true,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LaunchConfig {
-    /// Seconds to wait after starting codex before restoring auth.json (default: 3).
-    /// Codex CLI reads auth.json only at startup; this delay ensures it finishes reading
-    /// before the original auth is restored.
-    pub restore_delay_secs: u64,
-}
-
-impl Default for LaunchConfig {
-    fn default() -> Self {
-        Self {
-            restore_delay_secs: 3,
-        }
-    }
+    /// Extra top-level entries of the Codex home to share with every
+    /// per-account launch home, on top of the built-in list (configuration,
+    /// instructions, skills, plugins, sessions, history, …).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shared_paths: Vec<String>,
 }
 
 pub fn config_path() -> anyhow::Result<PathBuf> {
@@ -148,6 +144,13 @@ pub fn config_path() -> anyhow::Result<PathBuf> {
 struct DeprecatedConfigProbe {
     #[serde(rename = "use")]
     use_cfg: Option<DeprecatedUseProbe>,
+    launch: Option<DeprecatedLaunchProbe>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct DeprecatedLaunchProbe {
+    restore_delay_secs: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,6 +165,16 @@ fn deprecated_key_warnings(raw: &str) -> Vec<String> {
     let Ok(probe) = toml::from_str::<DeprecatedConfigProbe>(raw) else {
         return warnings;
     };
+    if probe
+        .launch
+        .is_some_and(|launch| launch.restore_delay_secs.is_some())
+    {
+        warnings.push(
+            "config: [launch] 'restore_delay_secs' is obsolete and ignored: launch no longer \
+             swaps the shared auth.json, each account runs in its own Codex home"
+                .into(),
+        );
+    }
     if let Some(use_cfg) = probe.use_cfg {
         if use_cfg.mode.is_some() {
             warnings.push(
@@ -315,16 +328,32 @@ mod tests {
     /// before Codex has read the staged one, so the session silently runs on
     /// the wrong account. Every sibling interval already gets this treatment.
     #[test]
-    fn launch_zero_restore_delay_uses_default_and_warns() {
-        let (config, warnings) =
+    fn obsolete_restore_delay_is_ignored_with_a_warning() {
+        let (_config, warnings) =
             super::load_from_str_with_warnings("[launch]\nrestore_delay_secs = 0\n").unwrap();
 
-        assert_eq!(config.launch.restore_delay_secs, 3);
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("restore_delay_secs")),
-            "a silently-corrected launch delay is what hands Codex the wrong account: {warnings:?}"
+                .any(|warning| warning.contains("restore_delay_secs")
+                    && warning.contains("obsolete")),
+            "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn launch_shared_paths_drop_invalid_entries_with_a_warning() {
+        let (config, warnings) = super::load_from_str_with_warnings(
+            "[launch]\nshared_paths = [\"pets\", \"auth.json\", \"../x\"]\n",
+        )
+        .unwrap();
+
+        assert_eq!(config.launch.shared_paths, ["pets"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn team_priority_is_off_by_default() {
+        assert!(!super::AppConfig::default().use_cfg.team_priority);
     }
 }

@@ -61,7 +61,7 @@ pub fn read_current() -> String {
         .unwrap_or_default()
 }
 
-fn ensure_private_dir(path: &Path) -> Result<()> {
+pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path)
         .with_context(|| format!("creating directory {}", path.display()))?;
     #[cfg(windows)]
@@ -149,6 +149,17 @@ struct AuthTransaction {
 
 fn lock_auth_transaction() -> Result<AuthTransaction> {
     lock_auth_transaction_after_launch(|| {})
+}
+
+/// Like `lock_auth_transaction`, but gives up after `timeout` on each lock.
+/// For best-effort background work that must not stall a caller.
+fn try_lock_auth_transaction(timeout: Duration) -> Result<AuthTransaction> {
+    let launch = acquire_file_lock(&launch_lock_path()?, timeout, "launch session")?;
+    let auth = acquire_file_lock(&auth_lock_path()?, timeout, "auth")?;
+    Ok(AuthTransaction {
+        _launch: launch,
+        _auth: auth,
+    })
 }
 
 fn lock_auth_transaction_after_launch(after_launch: impl FnOnce()) -> Result<AuthTransaction> {
@@ -505,6 +516,86 @@ fn update_profile_tokens_if_refresh_matches_after_launch(
         }
     }
     Ok(true)
+}
+
+/// Which copy a [`reconcile_live_with_profile`] pass rewrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthSync {
+    LiveToProfile,
+    ProfileToLive,
+}
+
+/// Keep the current profile and the live `auth.json` on the same rotation.
+///
+/// An isolated `launch` writes refreshed tokens into the profile, while a plain
+/// `codex` on the same account writes the live file. OpenAI rotates refresh
+/// tokens on every use, so whichever copy is older now holds a spent token;
+/// replaying it fails with `refresh_token_reused` and forces a re-login. When
+/// `alias` is current and both copies are the same account, the copy with the
+/// later `last_refresh` replaces the other. Anything else is left alone.
+///
+/// Lock waits are short: this runs periodically while a launched Codex is
+/// alive and simply tries again on the next tick.
+pub fn reconcile_live_with_profile(alias: &str) -> Result<Option<AuthSync>> {
+    validate_alias(alias)?;
+    let _transaction = try_lock_auth_transaction(Duration::from_millis(500))?;
+    if read_current() != alias {
+        return Ok(None);
+    }
+    let profile_path = profile_auth_path(alias)?;
+    let live_path = crate::auth::codex_auth_path_unchecked()?;
+    if !profile_path.is_file() || !live_path.is_file() {
+        return Ok(None);
+    }
+    // Codex rewrites auth.json in place; a half-written file fails to parse
+    // here and is retried on the next pass.
+    let profile = read_auth(&profile_path)?;
+    let live = read_auth(&live_path)?;
+    if profile == live || ensure_same_account_identity(alias, &profile, &live).is_err() {
+        return Ok(None);
+    }
+    let direction = match (parse_last_refresh(&profile), parse_last_refresh(&live)) {
+        (Some(saved), Some(current)) if current > saved => AuthSync::LiveToProfile,
+        (Some(saved), Some(current)) if saved > current => AuthSync::ProfileToLive,
+        (None, Some(_)) => AuthSync::LiveToProfile,
+        (Some(_), None) => AuthSync::ProfileToLive,
+        _ => return Ok(None),
+    };
+    match direction {
+        AuthSync::LiveToProfile => {
+            crate::auth::validate_managed_auth_value(&live)?;
+            write_auth(&profile_path, &live)?;
+        }
+        AuthSync::ProfileToLive => {
+            crate::auth::ensure_chatgpt_backend_supported(&format!(
+                "update live auth from profile '{alias}'"
+            ))?;
+            crate::auth::validate_managed_auth_value(&profile)?;
+            write_auth(&live_path, &profile)?;
+        }
+    }
+    Ok(Some(direction))
+}
+
+/// Fold credentials that Codex wrote as a regular file inside an account home
+/// (after `codex logout` removed its link) back into the profile. Same account
+/// only; newer credentials replace the saved ones, older ones are dropped.
+pub(crate) fn absorb_account_home_auth(alias: &str, local: &serde_json::Value) -> Result<()> {
+    validate_alias(alias)?;
+    let profile_path = profile_auth_path(alias)?;
+    let _transaction = lock_auth_transaction()?;
+    let saved = read_auth(&profile_path)?;
+    ensure_same_account_identity(alias, &saved, local)?;
+    let newer = match (parse_last_refresh(&saved), parse_last_refresh(local)) {
+        (Some(saved), Some(local)) => local > saved,
+        (None, Some(_)) => true,
+        _ => false,
+    };
+    if newer {
+        crate::auth::validate_managed_auth_value(local)?;
+        write_auth(&profile_path, local)?;
+    }
+    Ok(())
 }
 
 /// Replace a saved profile and its live copy, when current, as one serialized
@@ -1487,6 +1578,20 @@ pub fn rename_profile(old_alias: &str, new_alias: &str) -> Result<()> {
             new_dir.display()
         )
     })?;
+    // Keep the per-account Codex state (model cache, logs) with the profile;
+    // the next launch relinks its credentials to the new profile path.
+    let old_home = crate::account_home::account_home_path(old_alias)?;
+    let new_home = crate::account_home::account_home_path(new_alias)?;
+    if old_home.exists()
+        && !new_home.exists()
+        && let Err(err) = std::fs::rename(&old_home, &new_home)
+    {
+        tracing::warn!(
+            "Failed to rename account home {} -> {}: {err}",
+            old_home.display(),
+            new_home.display()
+        );
+    }
     if let Err(err) = crate::cache::rename(old_alias, new_alias) {
         tracing::warn!("Failed to rename cache entry {old_alias} -> {new_alias}: {err}");
     }
@@ -2645,6 +2750,144 @@ mod tests {
 
     fn write_live(val: &serde_json::Value) {
         crate::auth::write_auth(&crate::auth::codex_auth_path().unwrap(), val).unwrap();
+    }
+
+    fn read_profile(alias: &str) -> serde_json::Value {
+        crate::auth::read_auth(&super::profile_auth_path(alias).unwrap()).unwrap()
+    }
+
+    fn read_live() -> serde_json::Value {
+        crate::auth::read_auth(&crate::auth::codex_auth_path().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn reconcile_copies_a_rotation_from_an_isolated_launch_to_live_auth() {
+        let _env = TestEnv::new();
+        let old = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a1",
+            "r1",
+            Some("2026-10-01T00:00:00Z"),
+        );
+        let rotated = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a2",
+            "r2",
+            Some("2026-10-02T00:00:00Z"),
+        );
+        seed_profile("work", &rotated);
+        write_live(&old);
+        super::write_current("work").unwrap();
+
+        assert_eq!(
+            super::reconcile_live_with_profile("work").unwrap(),
+            Some(super::AuthSync::ProfileToLive)
+        );
+        assert_eq!(read_live(), rotated);
+        assert_eq!(super::reconcile_live_with_profile("work").unwrap(), None);
+    }
+
+    #[test]
+    fn reconcile_copies_a_rotation_from_plain_codex_to_the_profile() {
+        let _env = TestEnv::new();
+        let old = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a1",
+            "r1",
+            Some("2026-10-01T00:00:00Z"),
+        );
+        let rotated = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a2",
+            "r2",
+            Some("2026-10-02T00:00:00Z"),
+        );
+        seed_profile("work", &old);
+        write_live(&rotated);
+        super::write_current("work").unwrap();
+
+        assert_eq!(
+            super::reconcile_live_with_profile("work").unwrap(),
+            Some(super::AuthSync::LiveToProfile)
+        );
+        assert_eq!(read_profile("work"), rotated);
+    }
+
+    #[test]
+    fn reconcile_leaves_other_accounts_and_non_current_profiles_alone() {
+        let _env = TestEnv::new();
+        let work = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a1",
+            "r1",
+            Some("2026-10-01T00:00:00Z"),
+        );
+        let other = stamped_auth_json(
+            "o@example.com",
+            "acct_o",
+            "b1",
+            "x1",
+            Some("2026-10-05T00:00:00Z"),
+        );
+        seed_profile("work", &work);
+        write_live(&other);
+
+        super::write_current("work").unwrap();
+        assert_eq!(super::reconcile_live_with_profile("work").unwrap(), None);
+        assert_eq!(read_profile("work"), work);
+        assert_eq!(read_live(), other);
+
+        let newer = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a2",
+            "r2",
+            Some("2026-10-09T00:00:00Z"),
+        );
+        write_live(&newer);
+        super::write_current("personal").unwrap();
+        assert_eq!(super::reconcile_live_with_profile("work").unwrap(), None);
+        assert_eq!(read_profile("work"), work);
+    }
+
+    #[test]
+    fn reconcile_without_an_ordering_stamp_changes_nothing() {
+        let _env = TestEnv::new();
+        let a = stamped_auth_json("w@example.com", "acct_w", "a1", "r1", None);
+        let b = stamped_auth_json("w@example.com", "acct_w", "a2", "r2", None);
+        seed_profile("work", &a);
+        write_live(&b);
+        super::write_current("work").unwrap();
+        assert_eq!(super::reconcile_live_with_profile("work").unwrap(), None);
+        assert_eq!(read_profile("work"), a);
+        assert_eq!(read_live(), b);
+    }
+
+    #[test]
+    fn rename_moves_the_account_home_with_the_profile() {
+        let _env = TestEnv::new();
+        let work = stamped_auth_json(
+            "w@example.com",
+            "acct_w",
+            "a1",
+            "r1",
+            Some("2026-10-01T00:00:00Z"),
+        );
+        seed_profile("work", &work);
+        let old_home = crate::account_home::account_home_path("work").unwrap();
+        std::fs::create_dir_all(&old_home).unwrap();
+        std::fs::write(old_home.join("models_cache.json"), "{}").unwrap();
+
+        rename_profile("work", "job").unwrap();
+
+        assert!(!old_home.exists());
+        let new_home = crate::account_home::account_home_path("job").unwrap();
+        assert!(new_home.join("models_cache.json").is_file());
     }
 
     fn seed_provider_alias(alias: &str) {

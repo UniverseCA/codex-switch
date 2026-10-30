@@ -6,8 +6,8 @@ use anyhow::Result;
 use semver::Version;
 use serde::Serialize;
 
-pub(crate) const MINIMUM_CODEX_VERSION: &str = "0.159.2";
-pub(crate) const ALIGNED_CODEX_VERSION: &str = "0.159.2";
+pub(crate) const MINIMUM_CODEX_VERSION: &str = "0.165.0";
+pub(crate) const ALIGNED_CODEX_VERSION: &str = "0.165.0";
 pub(crate) const CLI_UPGRADE_NPM_COMMAND: &str = "npm install -g @openai/codex@latest";
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -303,12 +303,12 @@ mod tests {
     #[test]
     fn parses_version_from_codex_cli_output() {
         assert_eq!(
-            parse_version(b"codex-cli 0.159.2\n", b"").unwrap(),
-            Version::new(0, 159, 2)
+            parse_version(b"codex-cli 0.165.0\n", b"").unwrap(),
+            Version::new(0, 165, 0)
         );
         assert_eq!(
-            parse_version(b"Codex v0.160.0\n", b"").unwrap(),
-            Version::new(0, 160, 0)
+            parse_version(b"Codex v0.166.0\n", b"").unwrap(),
+            Version::new(0, 166, 0)
         );
         assert!(parse_version(b"Codex CLI", b"").is_none());
     }
@@ -335,9 +335,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let path = executable(dir.path(), "codex with spaces", "echo Codex CLI 0.159.2");
+        let path = executable(dir.path(), "codex with spaces", "echo Codex CLI 0.165.0");
         let probe = probe_executable(&path);
-        assert_eq!(probe.version.as_ref().unwrap(), &Version::new(0, 159, 2));
+        assert_eq!(probe.version.as_ref().unwrap(), &Version::new(0, 165, 0));
         assert!(probe.meets_minimum());
     }
 
@@ -353,7 +353,7 @@ mod tests {
         assert!(report.note.unwrap().contains("exited with 7"));
 
         #[cfg(unix)]
-        let slow = executable(dir.path(), "slow-codex", "sleep 6; echo 0.159.2");
+        let slow = executable(dir.path(), "slow-codex", "sleep 6; echo 0.165.0");
         #[cfg(windows)]
         let slow = {
             let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
@@ -365,7 +365,7 @@ mod tests {
                 dir.path(),
                 "slow-codex",
                 &format!(
-                    "\"{powershell}\" -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 6; Write-Output 0.159.2\""
+                    "\"{powershell}\" -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 6; Write-Output 0.165.0\""
                 ),
             )
         };
@@ -398,15 +398,15 @@ mod tests {
                 .contains("full compatibility is not guaranteed")
         );
 
-        let old = executable(dir.path(), "old-codex", "echo 0.159.1");
+        let old = executable(dir.path(), "old-codex", "echo 0.164.0");
         assert!(!probe_executable(&old).meets_minimum());
 
-        let release_with_build = executable(dir.path(), "build-codex", "echo 0.159.2+build.7");
+        let release_with_build = executable(dir.path(), "build-codex", "echo 0.165.0+build.7");
         let probe = probe_executable(&release_with_build);
         assert!(probe.meets_minimum());
         assert_eq!(probe.report().status, CompatibilityStatus::Aligned);
 
-        let prerelease = executable(dir.path(), "prerelease-codex", "echo 0.159.2-rc.1");
+        let prerelease = executable(dir.path(), "prerelease-codex", "echo 0.165.0-rc.1");
         assert!(!probe_executable(&prerelease).meets_minimum());
     }
 
@@ -416,9 +416,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        let old = executable(dir.path(), "old-codex", "echo 0.159.1");
+        let old = executable(dir.path(), "old-codex", "echo 0.164.0");
         let error = ensure_launch_version(&old).unwrap_err().to_string();
-        assert!(error.contains("requires Codex 0.159.2 or newer"), "{error}");
+        assert!(error.contains("requires Codex 0.165.0 or newer"), "{error}");
         assert!(
             error.contains("npm install -g @openai/codex@latest"),
             "{error}"
@@ -428,7 +428,7 @@ mod tests {
 
         let mut path_report = VersionReport {
             executable: Some("codex".to_string()),
-            version: Some("0.159.1".to_string()),
+            version: Some("0.164.0".to_string()),
             status: CompatibilityStatus::BelowMinimum,
             note: None,
         };
@@ -439,7 +439,7 @@ mod tests {
 
         let mut desktop_report = VersionReport {
             executable: Some("desktop-codex".to_string()),
-            version: Some("0.159.1".to_string()),
+            version: Some("0.164.0".to_string()),
             status: CompatibilityStatus::BelowMinimum,
             note: None,
         };
@@ -464,19 +464,19 @@ mod tests {
 
     #[test]
     fn build_metadata_does_not_make_engine_versions_different() {
-        let release = Version::parse("0.159.2+cli-build").unwrap();
-        let desktop = Version::parse("0.159.2+desktop-build").unwrap();
+        let release = Version::parse("0.165.0+cli-build").unwrap();
+        let desktop = Version::parse("0.165.0+desktop-build").unwrap();
         assert!(versions_match(&release, &desktop));
         assert_eq!(
             compare_versions(&release, &desktop),
             (true, "same".to_string())
         );
         assert_eq!(
-            compare_versions(&Version::new(0, 159, 1), &Version::new(0, 159, 2)),
+            compare_versions(&Version::new(0, 159, 1), &Version::new(0, 165, 0)),
             (false, "desktop_engine_newer".to_string())
         );
         assert_eq!(
-            compare_versions(&Version::new(0, 159, 2), &Version::new(0, 159, 1)),
+            compare_versions(&Version::new(0, 165, 0), &Version::new(0, 159, 1)),
             (false, "desktop_engine_older".to_string())
         );
     }

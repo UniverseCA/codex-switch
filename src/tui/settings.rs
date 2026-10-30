@@ -22,7 +22,6 @@ enum Focus {
     SafetyMargin,
     TeamPriority,
     RestartAppServer,
-    RestoreDelay,
 }
 
 const FOCUS_ORDER: &[Focus] = &[
@@ -34,7 +33,6 @@ const FOCUS_ORDER: &[Focus] = &[
     Focus::SafetyMargin,
     Focus::TeamPriority,
     Focus::RestartAppServer,
-    Focus::RestoreDelay,
 ];
 
 pub struct SettingsState {
@@ -238,7 +236,6 @@ impl SettingsState {
             Focus::MaxConcurrent => self.draft.network.max_concurrent.to_string(),
             Focus::TuiRefresh => self.draft.tui.auto_refresh_interval_secs.to_string(),
             Focus::SafetyMargin => format_num(self.draft.use_cfg.safety_margin_7d),
-            Focus::RestoreDelay => self.draft.launch.restore_delay_secs.to_string(),
             Focus::TeamPriority | Focus::RestartAppServer => return,
         };
         self.input = value;
@@ -265,10 +262,6 @@ impl SettingsState {
             }
             Focus::SafetyMargin => {
                 self.draft.use_cfg.safety_margin_7d = parse_f64(&raw, "use.safety_margin_7d")?;
-            }
-            Focus::RestoreDelay => {
-                self.draft.launch.restore_delay_secs =
-                    parse_u64(&raw, 1, "launch.restore_delay_secs")?;
             }
             Focus::TeamPriority | Focus::RestartAppServer => {}
         }
@@ -388,12 +381,11 @@ fn field_hint(focus: Focus) -> &'static str {
         Focus::MaxConcurrent => "Maximum simultaneous usage requests (minimum 1).",
         Focus::TuiRefresh => "Seconds between refreshes while `t` auto-refresh is on (minimum 30).",
         Focus::SafetyMargin => "7d headroom % below which auto-select penalizes an account.",
-        Focus::TeamPriority => "Prefer Team-plan accounts when auto-selecting.",
+        Focus::TeamPriority => {
+            "Prefer Team-plan accounts when auto-selecting (off: balance on quota only)."
+        }
         Focus::RestartAppServer => {
             "After the live auth.json changes (use, TUI u, login), restart a running Codex\napp-server daemon so new sessions use the account. Interrupts turns in progress.\noff = leave the daemon alone and only show the manual command."
-        }
-        Focus::RestoreDelay => {
-            "Seconds `launch` waits before restoring auth.json after starting Codex\n(minimum 1; 0 would restore it before Codex has read it)."
         }
     }
 }
@@ -558,23 +550,6 @@ pub fn render_settings_tab(
     );
     lines.push(Line::from(""));
     line_focus.push(None);
-    lines.push(Line::from(Span::styled("Launch", header())));
-    line_focus.push(None);
-    push_field(
-        settings,
-        Focus::RestoreDelay,
-        "launch.restore_delay_secs",
-        field_value(
-            settings,
-            Focus::RestoreDelay,
-            &settings.draft.launch.restore_delay_secs.to_string(),
-        ),
-        &mut lines,
-        &mut line_focus,
-        &mut focused_line,
-    );
-    lines.push(Line::from(""));
-    line_focus.push(None);
     if let Some(error) = &settings.error {
         lines.push(Line::from(Span::styled(error.clone(), base().fg(C_RED))));
         line_focus.push(None);
@@ -663,10 +638,8 @@ mod tests {
             team_priority: _,
             restart_app_server: _,
         } = use_cfg;
-        let crate::config::LaunchConfig {
-            restore_delay_secs: _,
-        } = launch;
-        assert_eq!(FOCUS_ORDER.len(), 9);
+        let crate::config::LaunchConfig { shared_paths: _ } = launch;
+        assert_eq!(FOCUS_ORDER.len(), 8);
     }
 
     fn type_value(settings: &mut SettingsState, value: &str) {
@@ -715,8 +688,6 @@ mod tests {
         type_value(&mut settings, "15");
         move_to(&mut settings, Focus::TeamPriority);
         settings.handle_key(KeyCode::Enter);
-        move_to(&mut settings, Focus::RestoreDelay);
-        type_value(&mut settings, "5");
         assert!(settings.is_dirty());
 
         match settings.try_save() {
@@ -735,8 +706,7 @@ mod tests {
         assert_eq!(loaded.network.max_concurrent, 8);
         assert_eq!(loaded.tui.auto_refresh_interval_secs, 60);
         assert_eq!(loaded.use_cfg.safety_margin_7d, 15.0);
-        assert!(!loaded.use_cfg.team_priority);
-        assert_eq!(loaded.launch.restore_delay_secs, 5);
+        assert!(loaded.use_cfg.team_priority);
         unsafe {
             match prev_cs {
                 Some(v) => std::env::set_var("CODEX_SWITCH_HOME", v),

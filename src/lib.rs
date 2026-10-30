@@ -5,6 +5,7 @@
 // lib target their items look dead; allow dead_code per-module instead of
 // crate-wide so the pub modules keep real dead-code detection.
 
+pub mod account_home;
 mod entry;
 pub use entry::run_cli;
 

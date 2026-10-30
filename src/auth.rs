@@ -1107,7 +1107,7 @@ mod tests {
     fn user_agent_uses_the_same_aligned_version_as_model_requests() {
         let version = codex_cli_version();
         assert!(codex_user_agent().starts_with(&format!("codex_cli_rs/{version} ")));
-        assert_eq!(ALIGNED_CODEX_VERSION, "0.159.2");
+        assert_eq!(ALIGNED_CODEX_VERSION, "0.165.0");
     }
 
     #[test]

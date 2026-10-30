@@ -5267,7 +5267,7 @@ mod tests {
         let warning = app.codex_compatibility_warning().unwrap();
         assert!(warning.contains("UPGRADE CODEX CLI"));
         assert!(warning.contains("0.154.0"));
-        assert!(warning.contains("0.159.2"));
+        assert!(warning.contains("0.165.0"));
         let instructions = app.codex_upgrade_instructions().unwrap();
         assert!(
             instructions
@@ -5298,7 +5298,7 @@ mod tests {
 
         app.codex_path_version = Some(crate::codex_compat::VersionReport {
             executable: Some("C:/codex.exe".into()),
-            version: Some("0.159.2".into()),
+            version: Some("0.165.0".into()),
             status: crate::codex_compat::CompatibilityStatus::Aligned,
             note: None,
         });

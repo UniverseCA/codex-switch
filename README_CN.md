@@ -56,6 +56,7 @@ codex-switch launch       # 用最佳账号启动 Codex
   ```
 - CLI 与 TUI 展示主额度池和每个模型的独立额度池。
 - 自适应配速感知评分自动选号，并可直接用它启动 Codex。
+- 每个账号在自己的 Codex 目录（`$CODEX_SWITCH_HOME/homes/<账号>`）里启动，不再替换 `~/.codex/auth.json`，多个终端可以同时用不同账号；配置、skills、插件和会话仍然共享，会话可以换一个账号继续（`resume`）。
 - 切换账号后（`use`、TUI 的 `u`，或会激活凭据的 `login`），若 Codex app-server daemon（Codex 0.157+）正在运行，会执行 `codex app-server daemon restart`，让新会话使用所选账号；可用 `[use] restart_app_server = false` 关闭。ChatGPT 的 `launch` 在 Codex 支持时改为附加 `--no-daemon`。
 - 支持重置卡、一次性配额预热（`warmup`）、强制刷新额度（`list -f`）、JSON 输出和代理。TUI 的 Accounts 页在未勾选账号时用 `u` 切换选中账号并显示进度，`t` 开启当前会话自动刷新，账号菜单中的 `w` 执行一次性预热；不运行常驻服务。
 - 自动刷新即将过期的 Token；直装版本自更新：`self-update`、`self-update --stable`、`self-update --version <VERSION>`，或用 `self-update --dev` 切换滚动开发通道 — 新装开发版使用 dev release 的 [install.sh](https://github.com/xjoker/codex-switch/releases/download/dev/install.sh) / [install.ps1](https://github.com/xjoker/codex-switch/releases/download/dev/install.ps1)。

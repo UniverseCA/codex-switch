@@ -79,7 +79,7 @@ codex-switch list --force # force a one-time usage refresh
 codex-switch warmup      # activate 5h quota windows once (skips 7d-only / free plans)
 codex-switch tui         # interactive dashboard
 codex-switch use         # switch to the best eligible account
-codex-switch launch      # select, start Codex, restore auth afterwards
+codex-switch launch      # select an account and start Codex in its own account home
 ```
 
 `use` without an alias ranks all accounts with the adaptive scoring algorithm; `use <alias>` switches explicitly. A running Codex app-server daemon (Codex 0.157 and newer) is restarted so new sessions use the selected account; an older Codex reads authentication at startup, so restart it after a manual switch — or use `launch`, which handles staging and restoration for you.

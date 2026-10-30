@@ -1,4 +1,23 @@
-# Codex source alignment, 2026-09-30
+# Codex source alignment
+
+## 0.165.0 and per-account launch homes, 2026-10-30
+
+The support minimum and alignment baseline are now [Codex rust-v0.165.0](https://github.com/openai/codex/releases/tag/rust-v0.165.0). The ChatGPT `launch` path was rewritten around per-account Codex homes; the following upstream behaviors were checked in the 0.165.0 source and are what that design depends on:
+
+| Behavior | Upstream location (0.165.0) | Why it matters |
+| --- | --- | --- |
+| `FileAuthStorage::save` truncates and rewrites `auth.json` in place | `codex-rs/login/src/auth/storage.rs` | A refresh is written through the account home's symlink into the saved profile. |
+| `persist_tokens` re-reads storage and refuses a different login ("Account credentials changed during refresh") | `codex-rs/login/src/auth/manager.rs` | With the previous swap-and-restore launch, a long session's refresh failed after the restore and stranded a spent refresh token in the profile. |
+| `AuthManager::auth` performs a guarded reload before a proactive refresh; 401 recovery reloads only the same account | `codex-rs/login/src/auth/manager.rs` | A rotation made by codex-switch in the shared profile file is picked up instead of replayed. |
+| `CODEX_SQLITE_HOME` selects the SQLite home when `sqlite_home` is not configured | `codex-rs/core/src/config/mod.rs`, `codex-rs/state/src/lib.rs` | State, thread-history, goals, memories, queue and log databases stay in the shared home. |
+| Config edits resolve symlinks before their atomic write | `codex-rs/core/src/config/edit.rs`, `codex-rs/utils/path-utils` | A linked `config.toml` is updated in the shared home rather than replaced by a private copy. |
+| Thread writer locks (`thread-writer-locks/`), `session_index.jsonl`, rollout migration journals and rollout maintenance locks (`.tmp/`) live under `CODEX_HOME` | `codex-rs/rollout/src/`, `codex-rs/thread-store/src/local/` | Shared with the sessions they guard. |
+| The app-server control socket is derived from `CODEX_HOME` | `codex-rs/app-server-transport/src/transport/mod.rs` | Per-account homes never share a daemon; launch still passes `--no-daemon`. |
+| `auth.json` gained optional `tokens.oauth_provenance` and `tokens.login_owner_id`; the OAuth client id is unchanged | `codex-rs/login/src/token_data.rs` | codex-switch edits tokens in place, so these fields are preserved. |
+
+Local verification on Linux: `cargo test --all`, `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` pass. A smoke test with the official 0.165.0 npm build and fake credentials confirmed that `launch <alias> -- login status` reads credentials through the account home, and that `exec` sessions from two accounts (network blocked) write their rollouts and all SQLite databases into the shared home while each account home only gains `installation_id`, `shell_snapshots` and `.sandbox_migration`. No real account, production refresh or cross-account `resume` against the ChatGPT backend was exercised; resuming a session under another account depends on the backend accepting the earlier account's encrypted reasoning items and remains to be validated with real accounts.
+
+## 0.159.2 alignment, 2026-09-30
 
 The development candidate is based on project commit `be8ea732d35447a789741aa061aed320d05cb4de`, including the native-profile, daemon deadline, semantic-auth comparison, Windows ACL and dependency fixes already on `dev`.
 

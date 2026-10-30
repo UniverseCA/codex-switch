@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**Upgrade notes (breaking changes)**
+
+- **ChatGPT `launch` runs each account in its own Codex home.** Codex starts with `CODEX_HOME=$CODEX_SWITCH_HOME/homes/<alias>`, whose `auth.json` is a symlink to the saved profile, so the shared `~/.codex/auth.json` is no longer swapped and restored. Refreshes Codex makes during a long session land in the profile instead of being lost (previously they failed with "Account credentials changed during refresh" once the original file was restored, leaving the profile with a spent refresh token). Launches of different accounts no longer wait for each other, so several terminals can run different accounts at once.
+- **Shared content stays shared.** `config.toml`, `AGENTS.md`, hooks, history, skills, plugins, prompts, rules, memories, worktrees, sessions and the locks that guard them are linked from the shared Codex home into every account home, and `CODEX_SQLITE_HOME` points the SQLite databases at the shared home, so a session started under one account can be resumed under another. Add more entries with `[launch] shared_paths`. A real file in an account home where a link belongs is kept as a per-account override.
+- **`[launch] restore_delay_secs` is obsolete** and ignored with a warning; the TUI Settings field is removed.
+- **`[use] team_priority` now defaults to `false`**, so automatic selection balances on quota alone. Set it to `true` to prefer Team accounts again.
+- **Codex CLI 0.165.0 or newer is required for `launch`** (alignment baseline 0.165.0). The per-account homes rely on Codex reading `CODEX_SQLITE_HOME`, following symlinks when it rewrites `config.toml`, and reloading `auth.json` before refreshing, all verified against 0.165.0.
+
+**Changes**
+
+- While a launched session runs and its account is also the current `use` account, the profile and the live `auth.json` are reconciled every few seconds (same account only, newer `last_refresh` wins), so plain `codex` and launched sessions on that account do not strand each other's rotated refresh token.
+- `codex logout` / `codex login` inside an account home is handled on the next launch: credentials for the same account are folded into the profile when newer, a different account is refused with instructions.
+- `rename` moves the account home with the profile. `--json launch` reports `codex_home`.
+
 ## v20261001.5.0 — 2026-10-01
 
 Stable release candidate covering every development build since v20260804.1.0. Read the upgrade notes first: this release removes the background daemon.

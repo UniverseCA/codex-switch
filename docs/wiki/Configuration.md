@@ -67,16 +67,16 @@ auto_refresh_interval_secs = 300   # minimum 30; lower values are raised to 30
 
 [use]
 safety_margin_7d = 20              # 7d headroom % below which scoring penalizes
-team_priority = true               # prefer Team-plan accounts during selection
+team_priority = false              # prefer Team-plan accounts during selection
 restart_app_server = true          # restart a running Codex app-server daemon after the live auth.json changes
 
 [launch]
-restore_delay_secs = 3             # seconds before restoring auth.json after launch
+shared_paths = ["pets"]            # extra Codex-home entries to share with every account home (default: none)
 ```
 
 `use.restart_app_server` (also the `use.restart_app_server` toggle in the TUI Settings tab) controls what `use`, an auto-selecting `use`, the TUI `u` switch, and the `login` paths that activate credentials do when the live `auth.json` changed and a Codex app-server daemon (Codex 0.157+) is running. With `true`, codex-switch runs `codex app-server daemon restart` so new sessions use the switched account; sessions attached to the daemon reconnect, and a turn in progress is interrupted. With `false`, the daemon is left alone and a note shows the manual command. The live file is compared as canonical JSON before and after the change, so a rewrite that only changes formatting (for example by Codex's own token refresh) never restarts the daemon. Each daemon call, including collecting its output, is bounded to 15 seconds; a daemon that does not answer is reported as a failed restart and never fails the switch. `launch` does not use this setting: a ChatGPT launch avoids the daemon with `--no-daemon` instead (see [Feature guide](Feature-Guide#launch-codex-with-a-profile)).
 
-`launch.restore_delay_secs` is a compatibility delay, not a handshake; increase it only if the local Codex process reads authentication later than three seconds after launch. A value of `0` is invalid (the original `auth.json` would be restored before Codex has read the staged one), so it is replaced by `3` with a startup warning.
+`launch.shared_paths` adds top-level entries of the Codex home to the built-in list linked into every per-account launch home (see [Feature guide](Feature-Guide#launch-codex-with-a-profile)). Each entry must be a single name inside the Codex home; `auth.json`, paths with separators and `..` are dropped with a startup warning. The obsolete `launch.restore_delay_secs` is ignored with a warning.
 
 `[use]` keys `mode` and `min_remaining` from older releases are ignored with a warning; the adaptive algorithm replaced all selection modes. The TUI Settings tab writes the whole file, so comments and unknown keys are not preserved.
 

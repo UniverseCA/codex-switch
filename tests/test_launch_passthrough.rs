@@ -85,6 +85,7 @@ data.append({
     "argv": sys.argv[1:],
     "pid": os.getpid(),
     "codex_home": os.environ.get("CODEX_HOME"),
+    "sqlite_home": os.environ.get("CODEX_SQLITE_HOME"),
 })
 # Write to a temp file and rename it into place so a concurrent reader never
 # sees a truncated, half-written log.
@@ -109,7 +110,7 @@ if argv == ["--version"]:
         time.sleep(float(os.environ["CS_FAKE_CODEX_VERSION_DELAY"]))
     if os.environ.get("CS_FAKE_CODEX_VERSION_FAIL") == "1":
         sys.exit(7)
-    sys.stdout.write("codex-cli " + os.environ.get("CS_FAKE_CODEX_VERSION", "0.159.2") + "\n")
+    sys.stdout.write("codex-cli " + os.environ.get("CS_FAKE_CODEX_VERSION", "0.165.0") + "\n")
     sys.exit(0)
 if argv == ["--help"]:
     if os.environ.get("CS_FAKE_CODEX_HELP_DELAY"):
@@ -124,7 +125,7 @@ if argv == ["--help"]:
     sys.exit(0)
 if argv == ["app-server", "daemon", "version"]:
     if os.environ.get("CS_FAKE_CODEX_DAEMON") == "running":
-        sys.stdout.write('{"status":"running","cliVersion":"0.159.2","appServerVersion":"0.159.2"}\n')
+        sys.stdout.write('{"status":"running","cliVersion":"0.165.0","appServerVersion":"0.165.0"}\n')
         sys.exit(0)
     sys.stderr.write("Error: failed to connect to app-server-control.sock\n")
     sys.exit(1)
@@ -172,6 +173,16 @@ if session_id:
             "updated_at": updated_at,
             "rollout_path": os.path.relpath(rollout, codex_home).replace(os.sep, "/"),
         }) + "\n")
+# Model an in-session token refresh: Codex truncates and rewrites
+# $CODEX_HOME/auth.json in place.
+new_refresh = os.environ.get("CS_FAKE_CODEX_REFRESH")
+if new_refresh:
+    auth_path = os.path.join(os.environ["CODEX_HOME"], "auth.json")
+    auth = json.loads(open(auth_path, encoding="utf-8").read())
+    auth["tokens"]["refresh_token"] = new_refresh
+    auth["last_refresh"] = "2026-10-30T00:00:00Z"
+    with open(auth_path, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(auth))
 delay = float(os.environ.get("CS_FAKE_CODEX_SLEEP", "0"))
 if delay:
     import time
@@ -265,7 +276,7 @@ fn warm_fake_codex(home: &Path, fake_bin: &Path, log: &Path) {
     }
     command
         .env("CS_FAKE_CODEX_LOG", log)
-        .env("CS_FAKE_CODEX_VERSION", "0.159.2");
+        .env("CS_FAKE_CODEX_VERSION", "0.165.0");
     let output = command
         .output()
         .unwrap_or_else(|error| panic!("warming fake Codex executable: {error}"));
@@ -344,6 +355,7 @@ fn recorded_argv(log: &Path) -> Vec<Vec<String>> {
 struct FakeLaunch {
     argv: Vec<String>,
     codex_home: PathBuf,
+    sqlite_home: Option<PathBuf>,
 }
 
 fn recorded_launches(log: &Path) -> Vec<FakeLaunch> {
@@ -375,6 +387,7 @@ fn launches_from_entries(data: Vec<Value>) -> Vec<FakeLaunch> {
             Some(FakeLaunch {
                 argv,
                 codex_home: PathBuf::from(entry["codex_home"].as_str().unwrap()),
+                sqlite_home: entry["sqlite_home"].as_str().map(PathBuf::from),
             })
         })
         .collect()
@@ -678,11 +691,6 @@ fn setup_chatgpt(home: &Path) {
     )
     .unwrap();
     fs::create_dir_all(home.join(".codex-switch")).unwrap();
-    fs::write(
-        home.join(".codex-switch/config.toml"),
-        "[launch]\nrestore_delay_secs = 1\n",
-    )
-    .unwrap();
     write_auth(
         &home.join(".codex-switch/profiles/work/auth.json"),
         "work@example.com",
@@ -752,6 +760,123 @@ fn launch_chatgpt_puts_cs_model_after_exec() {
         last_non_version_argv(&log),
         ["exec", "--model", "gpt-5.4", "--json", ARGV_EDGE_CASE]
     );
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn launch_chatgpt_runs_in_its_account_home_and_never_touches_live_auth() {
+    let home = temp_home("chatgpt-account-home");
+    let (fake_bin, log) = install_fake_codex(&home);
+    setup_chatgpt(&home);
+    // The live login belongs to another account; launch must leave it alone.
+    let live = home.join(".codex/auth.json");
+    write_auth(&live, "other@example.com", "acct_other");
+    let live_before = fs::read(&live).unwrap();
+
+    let output = run_env(
+        &home,
+        &fake_bin,
+        &log,
+        &["launch", "work", "--", "exec", "hi"],
+        &[("CS_FAKE_CODEX_REFRESH", "refresh-rotated-in-session")],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let launches = recorded_launches(&log);
+    let launch = launches.last().expect("codex launched");
+    let account_home = home.join(".codex-switch/homes/work");
+    assert_eq!(
+        fs::canonicalize(&launch.codex_home).unwrap(),
+        fs::canonicalize(&account_home).unwrap()
+    );
+    assert_eq!(
+        launch
+            .sqlite_home
+            .as_deref()
+            .map(|p| fs::canonicalize(p).unwrap()),
+        Some(fs::canonicalize(home.join(".codex")).unwrap()),
+        "the state database must stay in the shared home so sessions resume across accounts"
+    );
+    assert_eq!(
+        fs::read_link(account_home.join("sessions")).unwrap(),
+        fs::canonicalize(home.join(".codex"))
+            .unwrap()
+            .join("sessions")
+    );
+
+    // The refresh Codex wrote through its CODEX_HOME reached the profile.
+    let profile: Value = serde_json::from_slice(
+        &fs::read(home.join(".codex-switch/profiles/work/auth.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        profile["tokens"]["refresh_token"],
+        "refresh-rotated-in-session"
+    );
+    assert_eq!(fs::read(&live).unwrap(), live_before);
+    let leftovers: Vec<_> = fs::read_dir(home.join(".codex"))
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.starts_with("auth.json."))
+        .collect();
+    assert!(leftovers.is_empty(), "no backups expected: {leftovers:?}");
+    let _ = fs::remove_dir_all(home);
+}
+
+#[test]
+fn launches_of_different_accounts_run_side_by_side() {
+    let home = temp_home("chatgpt-side-by-side");
+    let (fake_bin, log) = install_fake_codex(&home);
+    setup_chatgpt(&home);
+    write_auth(
+        &home.join(".codex-switch/profiles/personal/auth.json"),
+        "personal@example.com",
+        "acct_personal",
+    );
+
+    let mut children: Vec<_> = ["work", "personal"]
+        .into_iter()
+        .map(|alias| {
+            let mut cmd = command(
+                &home,
+                &fake_bin,
+                &log,
+                &["launch", alias, "--", "exec", "x"],
+            );
+            cmd.env("CS_FAKE_CODEX_SLEEP", "3");
+            cmd.spawn().unwrap()
+        })
+        .collect();
+
+    // Both sessions are alive at once: neither waits for the other's lease.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let homes = loop {
+        let launches = try_recorded_launches(&log).unwrap_or_default();
+        if launches.len() >= 2 {
+            break launches;
+        }
+        assert!(
+            children
+                .iter_mut()
+                .all(|child| child.try_wait().unwrap().is_none()),
+            "a launch finished before the other started"
+        );
+        assert!(Instant::now() < deadline, "both launches must start");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    for child in &mut children {
+        assert!(child.wait().unwrap().success());
+    }
+    let mut names: Vec<_> = homes
+        .iter()
+        .map(|launch| launch.codex_home.file_name().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["personal", "work"]);
     let _ = fs::remove_dir_all(home);
 }
 
@@ -2181,7 +2306,7 @@ fn launch_rejects_old_codex_before_touching_live_auth_even_with_explicit_server(
         &fake_bin,
         &log,
         &["--json", "launch", "work", "--", "--no-daemon", "hello"],
-        &[("CS_FAKE_CODEX_VERSION", "0.159.1")],
+        &[("CS_FAKE_CODEX_VERSION", "0.164.0")],
     );
 
     assert!(!output.status.success());
@@ -2193,7 +2318,7 @@ fn launch_rejects_old_codex_before_touching_live_auth_even_with_explicit_server(
         report["error"]
             .as_str()
             .unwrap()
-            .contains("requires Codex 0.159.2 or newer")
+            .contains("requires Codex 0.165.0 or newer")
     );
     assert_eq!(fs::read(live_auth).unwrap(), original);
     assert!(recorded_launches(&log).is_empty());
@@ -2217,7 +2342,7 @@ fn old_codex_is_rejected_before_provider_native_run_creation() {
     );
 
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires Codex 0.159.2 or newer"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires Codex 0.165.0 or newer"));
     assert_eq!(
         fs::read(home.join(".codex-switch/providers/openrouter/provider.toml")).unwrap(),
         provider_before
@@ -2258,9 +2383,9 @@ fn doctor_reports_path_and_explicit_desktop_engine_versions_as_json() {
     let report: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("expected one JSON report ({error}): {stdout}"));
     assert_eq!(report["ok"], true);
-    assert_eq!(report["minimum_version"], "0.159.2");
-    assert_eq!(report["path_cli"]["version"], "0.159.2");
-    assert_eq!(report["desktop_codex"]["version"], "0.159.2");
+    assert_eq!(report["minimum_version"], "0.165.0");
+    assert_eq!(report["path_cli"]["version"], "0.165.0");
+    assert_eq!(report["desktop_codex"]["version"], "0.165.0");
     assert_eq!(report["versions_match"], true);
     assert!(
         report["path_cli"]["executable"]
@@ -2309,7 +2434,7 @@ fn auto_launch_checks_version_before_reset_card_selection_or_auth_staging() {
         &fake_bin,
         &log,
         &["--json", "launch", "--consume-card"],
-        &[("CS_FAKE_CODEX_VERSION", "0.159.1")],
+        &[("CS_FAKE_CODEX_VERSION", "0.164.0")],
     );
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2320,7 +2445,7 @@ fn auto_launch_checks_version_before_reset_card_selection_or_auth_staging() {
         report["error"]
             .as_str()
             .unwrap()
-            .contains("requires Codex 0.159.2 or newer")
+            .contains("requires Codex 0.165.0 or newer")
     );
     assert!(!home.join(".codex/auth.json").exists());
     assert!(!home.join(".codex-switch/provider-runs").exists());

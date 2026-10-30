@@ -39,7 +39,7 @@ codex-switch use          # switch to the best eligible account
 codex-switch launch       # start Codex with the best account
 ```
 
-`codex-switch launch` requires Codex CLI 0.159.2 or newer. Check the CLI found on `PATH` with `codex-switch doctor`; add `--desktop-codex <path>` to check a desktop app's bundled engine separately. This is codex-switch's support minimum, not a claim that older Codex versions cannot work on their own. Versions newer than the current 0.159.2 alignment baseline are accepted but not fully verified.
+`codex-switch launch` requires Codex CLI 0.165.0 or newer. Check the CLI found on `PATH` with `codex-switch doctor`; add `--desktop-codex <path>` to check a desktop app's bundled engine separately. This is codex-switch's support minimum, not a claim that older Codex versions cannot work on their own. Versions newer than the current 0.165.0 alignment baseline are accepted but not fully verified.
 
 ![TUI](docs/tui.png)
 
@@ -58,6 +58,7 @@ codex-switch launch       # start Codex with the best account
   ```
 - Displays the main and model-specific quota pools in CLI and TUI views.
 - Selects an eligible account with adaptive, pace-aware scoring, and launches Codex with it.
+- Runs every launched account in its own Codex home (`$CODEX_SWITCH_HOME/homes/<alias>`), so several terminals can use different accounts at once without swapping `~/.codex/auth.json`; configuration, skills, plugins and sessions stay shared, and a session can be resumed under another account.
 - After a switch (`use`, TUI `u`, or a `login` that activates credentials), restarts a running Codex app-server daemon (Codex 0.157+) with `codex app-server daemon restart` so new sessions use the selected account; disable with `[use] restart_app_server = false`. ChatGPT `launch` passes `--no-daemon` instead when Codex supports it.
 - Supports reset cards, one-time quota warmup (`warmup`), forced usage refresh (`list -f`), JSON output, and proxies. On the TUI Accounts page, `u` (when no accounts are marked) switches the selected account and shows progress, `t` enables session-only auto-refresh, and the account menu's `w` performs a one-time warmup; it does not run a resident service.
 - Refreshes expiring tokens and updates direct installs: `self-update`, `self-update --stable`, `self-update --version <VERSION>`, or the rolling dev channel via `self-update --dev` — new dev installs use [install.sh](https://github.com/xjoker/codex-switch/releases/download/dev/install.sh) / [install.ps1](https://github.com/xjoker/codex-switch/releases/download/dev/install.ps1) from the `dev` release.
