@@ -47,7 +47,7 @@ reqwest = { version = "0.12", features = [
 self-replace = "1"
 tempfile = "3"
 webbrowser = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "process", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

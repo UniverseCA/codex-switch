@@ -1,0 +1,247 @@
+use crate::account_home::AccountHome;
+use anyhow::{Context, Result};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::io::{self, Write};
+use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+
+const PAGE_SIZE: usize = 12;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Page {
+    data: Vec<Session>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Session {
+    id: String,
+    name: Option<String>,
+    preview: Option<String>,
+    cwd: String,
+    updated_at: i64,
+}
+
+pub(crate) async fn pick(
+    codex: &Path,
+    home: &AccountHome,
+    all: bool,
+    search: Option<&str>,
+) -> Result<Option<String>> {
+    let cwd = (!all).then(std::env::current_dir).transpose()?;
+    let mut command = Command::new(codex);
+    command
+        .args(["app-server", "--listen", "stdio://"])
+        .env("CODEX_HOME", &home.codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    if let Some((name, value)) = home.sqlite_env() {
+        command.env(name, value);
+    }
+    let mut child = command
+        .spawn()
+        .context("starting the local Codex app-server")?;
+    let mut input = child.stdin.take().context("opening the app-server input")?;
+    let mut output = BufReader::new(
+        child
+            .stdout
+            .take()
+            .context("opening the app-server output")?,
+    );
+    request(
+        &mut input,
+        &mut output,
+        0,
+        "initialize",
+        json!({"clientInfo": {"name": "codex-switch", "version": env!("CARGO_PKG_VERSION")}}),
+    )
+    .await?;
+    send(&mut input, json!({"method": "initialized"})).await?;
+
+    let mut cursor = None;
+    let mut id = 1;
+    loop {
+        let page = list_page(
+            &mut input,
+            &mut output,
+            id,
+            cwd.as_deref(),
+            search,
+            cursor.as_deref(),
+        )
+        .await?;
+
+        if page.data.is_empty() {
+            println!("No more matching local sessions.");
+            return Ok(None);
+        }
+        let has_next = page.next_cursor.is_some();
+        for (index, session) in page.data.iter().enumerate() {
+            let title = session
+                .name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .or(session.preview.as_deref())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or(&session.id);
+            let updated = chrono::DateTime::from_timestamp(session.updated_at, 0)
+                .map(|time| {
+                    time.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let location = if all {
+                format!("  [{}]", terminal_text(&session.cwd, 100))
+            } else {
+                String::new()
+            };
+            println!(
+                "{:>2}. {updated}  {}{location}",
+                index + 1,
+                terminal_text(title, 100)
+            );
+        }
+        loop {
+            let navigation = if has_next { ", n for next page" } else { "" };
+            print!("Session number{navigation}, or q to cancel: ");
+            io::stdout().flush()?;
+            let mut selection = String::new();
+            if io::stdin().read_line(&mut selection)? == 0 || selection.trim() == "q" {
+                return Ok(None);
+            }
+            let selection = selection.trim();
+            if has_next && selection == "n" {
+                break;
+            }
+            if let Ok(index) = selection.parse::<usize>()
+                && let Some(session) = index.checked_sub(1).and_then(|i| page.data.get(i))
+            {
+                return Ok(Some(session.id.clone()));
+            }
+            println!("Choose a number from 1 to {}.", page.data.len());
+        }
+        cursor = page.next_cursor;
+        id += 1;
+    }
+}
+
+async fn list_page(
+    input: &mut (impl AsyncWrite + Unpin),
+    output: &mut (impl AsyncBufRead + Unpin),
+    id: u64,
+    cwd: Option<&Path>,
+    search: Option<&str>,
+    cursor: Option<&str>,
+) -> Result<Page> {
+    serde_json::from_value(
+        request(
+            input,
+            output,
+            id,
+            "thread/list",
+            json!({
+                "currentAccountOnly": false,
+                "archived": false,
+                "sortKey": "updated_at",
+                "limit": PAGE_SIZE,
+                "cwd": cwd,
+                "searchTerm": search,
+                "cursor": cursor,
+            }),
+        )
+        .await?,
+    )
+    .context("decoding the local session list")
+}
+
+fn terminal_text(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .take(max_chars)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
+}
+
+async fn send(input: &mut (impl AsyncWrite + Unpin), message: Value) -> Result<()> {
+    let mut line = serde_json::to_vec(&message)?;
+    line.push(b'\n');
+    input.write_all(&line).await?;
+    Ok(())
+}
+
+async fn request(
+    input: &mut (impl AsyncWrite + Unpin),
+    output: &mut (impl AsyncBufRead + Unpin),
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    tokio::time::timeout(REQUEST_TIMEOUT, async {
+        send(input, json!({"id": id, "method": method, "params": params})).await?;
+        let mut line = String::new();
+        loop {
+            line.clear();
+            anyhow::ensure!(
+                output.read_line(&mut line).await? != 0,
+                "Codex app-server closed its connection"
+            );
+            let mut message: Value = serde_json::from_str(&line)?;
+            if message["id"].as_u64() != Some(id) || message.get("method").is_some() {
+                continue;
+            }
+            if let Some(error) = message.get("error") {
+                let detail = error["message"].as_str().unwrap_or("unknown error");
+                anyhow::bail!("{}", terminal_text(detail, 200));
+            }
+            return message
+                .get_mut("result")
+                .map(Value::take)
+                .context("missing result in app-server response");
+        }
+    })
+    .await
+    .with_context(|| format!("Codex app-server timed out during {method}"))?
+    .with_context(|| format!("requesting {method} from the local Codex app-server"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn list_page_explicitly_requests_shared_history() {
+        let mut written = Vec::new();
+        let mut replies = br#"{"method":"account/updated","params":{}}
+{"id":2,"result":{"data":[{"id":"session-id","name":"Shared session","cwd":"/repo","updatedAt":12}],"nextCursor":"page-3"}}
+"#
+        .as_slice();
+        let page = list_page(
+            &mut written,
+            &mut replies,
+            2,
+            None,
+            Some("Shared"),
+            Some("page-2"),
+        )
+        .await
+        .unwrap();
+        let sent: Value = serde_json::from_slice(&written).unwrap();
+        assert_eq!(sent["method"], "thread/list");
+        assert_eq!(sent["params"]["currentAccountOnly"], false);
+        assert_eq!(sent["params"]["archived"], false);
+        assert_eq!(sent["params"]["cwd"], Value::Null);
+        assert_eq!(sent["params"]["searchTerm"], "Shared");
+        assert_eq!(sent["params"]["cursor"], "page-2");
+        assert_eq!(page.data[0].id, "session-id");
+        assert_eq!(page.next_cursor.as_deref(), Some("page-3"));
+    }
+}

@@ -273,6 +273,17 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Browse shared local Codex sessions and resume one with a ChatGPT profile
+    Resume {
+        /// ChatGPT profile to resume with
+        alias: String,
+        /// Include sessions from every working directory
+        #[arg(long)]
+        all: bool,
+        /// Filter by session title
+        #[arg(long, value_name = "TITLE")]
+        search: Option<String>,
+    },
     /// Launch the interactive TUI
     Tui,
     /// Open the codex-switch data directory (~/.codex-switch, or $CODEX_SWITCH_HOME) in the system file manager

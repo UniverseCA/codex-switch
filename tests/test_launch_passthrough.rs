@@ -2582,3 +2582,18 @@ fn launch_chatgpt_leaves_an_explicit_server_choice_alone() {
     }
     let _ = fs::remove_dir_all(home);
 }
+
+#[test]
+fn shared_resume_requires_a_terminal_before_starting_codex() {
+    let home = tempfile::tempdir().unwrap();
+    let log = home.path().join("codex-log.json");
+    let output = run(home.path(), home.path(), &log, &["resume", "work", "--all"]);
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires an interactive terminal"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!log.exists());
+}

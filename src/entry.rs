@@ -167,6 +167,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Doctor { .. } => "doctor",
         Commands::Warmup { .. } => "warmup",
         Commands::Launch { .. } => "launch",
+        Commands::Resume { .. } => "resume",
         Commands::Tui => "tui",
         Commands::Open => "open",
         Commands::Provider(_) => "provider",
@@ -192,6 +193,7 @@ async fn dispatch(
                 | Commands::Doctor { .. }
                 | Commands::Open
                 | Commands::Launch { .. }
+                | Commands::Resume { .. }
         );
         if should_check {
             check_auth_change()
@@ -237,6 +239,9 @@ async fn dispatch(
                 .await?
         }
         Commands::Tui => tui::run_tui().await?,
+        Commands::Resume { alias, all, search } => {
+            crate::launch::resume_cmd(&alias, all, search, json).await?;
+        }
         Commands::Open => commands::open_cmd()?,
         Commands::Provider(sub) => commands::provider_cmd(sub, json).await?,
         Commands::Daemon { .. } => unreachable!("the daemon shim exits before dispatch"),

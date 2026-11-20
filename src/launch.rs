@@ -1,7 +1,7 @@
 use crate::output::{print_json, user_println};
 use crate::provider::{self, ProviderProfile, ReasoningLaunch};
 use crate::signals::{ShutdownListener, ShutdownSignal};
-use crate::{auth, profile};
+use crate::{auth, profile, resume};
 use anyhow::{Context, Result};
 use std::io::{self, IsTerminal};
 
@@ -12,6 +12,11 @@ pub(crate) enum TuiLaunchOutcome {
         signal: ShutdownSignal,
         cleanup_error: Option<String>,
     },
+}
+
+enum LaunchMode {
+    Passthrough(Vec<String>),
+    SharedResume { all: bool, search: Option<String> },
 }
 
 fn shutdown_outcome(signal: ShutdownSignal, cleanup: Result<()>) -> TuiLaunchOutcome {
@@ -92,7 +97,7 @@ pub(crate) async fn launch_for_tui(
 ) -> Result<TuiLaunchOutcome> {
     launch_interactive(
         Some(alias),
-        extra_args,
+        LaunchMode::Passthrough(extra_args),
         false,
         false,
         model,
@@ -112,10 +117,34 @@ pub(crate) async fn launch_cmd(
     finish_launch_cli(
         launch_interactive(
             alias,
-            args,
+            LaunchMode::Passthrough(args),
             json,
             consume_card,
             model,
+            ReasoningLaunch::Saved,
+            None,
+        )
+        .await?,
+    )
+}
+
+pub(crate) async fn resume_cmd(
+    alias: &str,
+    all: bool,
+    search: Option<String>,
+    json: bool,
+) -> Result<()> {
+    anyhow::ensure!(
+        !json && io::stdin().is_terminal() && io::stdout().is_terminal(),
+        "codex-switch resume requires an interactive terminal"
+    );
+    finish_launch_cli(
+        launch_interactive(
+            Some(alias),
+            LaunchMode::SharedResume { all, search },
+            false,
+            false,
+            None,
             ReasoningLaunch::Saved,
             None,
         )
@@ -144,7 +173,7 @@ fn finish_launch_cli(outcome: TuiLaunchOutcome) -> Result<()> {
 
 async fn launch_interactive(
     alias: Option<&str>,
-    args: Vec<String>,
+    mode: LaunchMode,
     json: bool,
     consume_card: bool,
     model: Option<&str>,
@@ -156,6 +185,11 @@ async fn launch_interactive(
     let codex_command = ensure_codex_available()?;
     crate::codex_compat::ensure_launch_version(&codex_command)?;
 
+    let (args, shared_resume) = match mode {
+        LaunchMode::Passthrough(args) => (args, None),
+        LaunchMode::SharedResume { all, search } => (Vec::new(), Some((all, search))),
+    };
+
     // A custom API provider profile takes a separate, simpler path: it has no
     // OAuth auth.json to stage, so it never touches ~/.codex/auth.json. It is
     // translated into `codex -c …` overrides with the key injected via the
@@ -163,6 +197,10 @@ async fn launch_interactive(
     if let Some(alias) = alias
         && provider::exists(alias)
     {
+        anyhow::ensure!(
+            shared_resume.is_none(),
+            "codex-switch resume requires a ChatGPT profile; use codex-switch launch {alias} -- resume for a custom provider"
+        );
         let profile = provider::load(alias)?;
         return launch_provider(
             profile,
@@ -225,11 +263,8 @@ async fn launch_interactive(
         user_println(&crate::commands::profile::revival_hint_message(hint));
     }
 
-    let forwarded = if codex_argv_selects_server(&forwarded) {
-        forwarded
-    } else {
-        embedded_codex_argv(codex_supports_no_daemon(&codex_command)?, forwarded)
-    };
+    let use_embedded =
+        !codex_argv_selects_server(&forwarded) && codex_supports_no_daemon(&codex_command)?;
 
     // Each account runs in its own Codex home whose auth.json links to the
     // profile, so nothing shared is swapped and concurrent launches of
@@ -241,6 +276,16 @@ async fn launch_interactive(
             .context("account home task panicked")?
             .with_context(|| format!("preparing the Codex home for profile '{target_alias}'"))?
     };
+    let forwarded = if let Some((all, search)) = shared_resume {
+        let Some(id) = resume::pick(&codex_command, &account_home, all, search.as_deref()).await?
+        else {
+            return Ok(TuiLaunchOutcome::Exited(0));
+        };
+        vec!["resume".to_string(), id]
+    } else {
+        forwarded
+    };
+    let forwarded = embedded_codex_argv(use_embedded, forwarded);
     sync_live_auth(&target_alias).await;
 
     let mut owned_shutdown;

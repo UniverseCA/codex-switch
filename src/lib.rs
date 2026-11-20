@@ -39,6 +39,7 @@ mod output;
 pub mod profile;
 #[allow(dead_code)]
 mod provider;
+mod resume;
 #[allow(dead_code)]
 mod signals;
 #[allow(dead_code)]
