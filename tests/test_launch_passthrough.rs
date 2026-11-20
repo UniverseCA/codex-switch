@@ -104,6 +104,10 @@ else:
     os.replace(tmp_path, path)
 
 argv = sys.argv[1:]
+if argv == ["features", "list"]:
+    if "engines" in os.path.normpath(sys.argv[0]).split(os.sep):
+        sys.stdout.write("shared_local_resume_history stable false\n")
+    sys.exit(0)
 if argv == ["--version"]:
     if os.environ.get("CS_FAKE_CODEX_VERSION_DELAY"):
         import time
@@ -2596,4 +2600,56 @@ fn shared_resume_requires_a_terminal_before_starting_codex() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(!log.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn chatgpt_launch_enables_native_shared_history_with_only_a_matching_candidate() {
+    let home = tempfile::tempdir().unwrap();
+    let (official, log) = install_fake_codex(home.path());
+    setup_chatgpt(home.path());
+    let app_home = home.path().join(".codex-switch");
+    fs::write(
+        app_home.join("config.toml"),
+        "[launch]\nshared_local_resume = true\n",
+    )
+    .unwrap();
+    let candidate = app_home.join("engines/0.170.0/bin");
+    fs::create_dir_all(&candidate).unwrap();
+    fs::copy(
+        official.join("fake_codex.py"),
+        candidate.join("fake_codex.py"),
+    )
+    .unwrap();
+    let python = locate_python3();
+    let binary = candidate.join("codex");
+    fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nCS_FAKE_CODEX_VERSION=0.170.0 exec {} {} \"$@\"\n",
+            shell_quote(python),
+            shell_quote(&candidate.join("fake_codex.py"))
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
+
+    for (version, expected) in [
+        ("0.170.0", vec!["--enable", "shared_local_resume_history"]),
+        ("0.171.0", vec![]),
+    ] {
+        let output = run_env(
+            home.path(),
+            &official,
+            &log,
+            &["launch", "work"],
+            &[("CS_FAKE_CODEX_VERSION", version)],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(last_non_version_argv(&log), expected);
+    }
 }

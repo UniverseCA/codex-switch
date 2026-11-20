@@ -72,11 +72,14 @@ restart_app_server = true          # restart a running Codex app-server daemon a
 
 [launch]
 shared_paths = ["pets"]            # extra Codex-home entries to share with every account home (default: none)
+shared_local_resume = false        # opt in to shared history in a compatible native Codex /resume
 ```
 
 `use.restart_app_server` (also the `use.restart_app_server` toggle in the TUI Settings tab) controls what `use`, an auto-selecting `use`, the TUI `u` switch, and the `login` paths that activate credentials do when the live `auth.json` changed and a Codex app-server daemon (Codex 0.157+) is running. With `true`, codex-switch runs `codex app-server daemon restart` so new sessions use the switched account; sessions attached to the daemon reconnect, and a turn in progress is interrupted. With `false`, the daemon is left alone and a note shows the manual command. The live file is compared as canonical JSON before and after the change, so a rewrite that only changes formatting (for example by Codex's own token refresh) never restarts the daemon. Each daemon call, including collecting its output, is bounded to 15 seconds; a daemon that does not answer is reported as a failed restart and never fails the switch. `launch` does not use this setting: a ChatGPT launch avoids the daemon with `--no-daemon` instead (see [Feature guide](Feature-Guide#launch-codex-with-a-profile)).
 
 `launch.shared_paths` adds top-level entries of the Codex home to the built-in list linked into every per-account launch home (see [Feature guide](Feature-Guide#launch-codex-with-a-profile)). Each entry must be a single name inside the Codex home; `auth.json`, paths with separators and `..` are dropped with a startup warning. The obsolete `launch.restore_delay_secs` is ignored with a warning.
+
+`launch.shared_local_resume` enables shared local history for an interactive ChatGPT launch when the resolved Codex CLI supports the feature. You can toggle it in the Settings tab. The launcher can use a compatible candidate installed under `$CODEX_SWITCH_HOME/engines/<version>/bin/` at the same version as the PATH CLI. `codex-switch doctor` reports the selected executable and support. See [Native shared resume](https://github.com/UniverseCA/codex-switch/blob/master/docs/native-shared-resume.md) for build and validation steps.
 
 `[use]` keys `mode` and `min_remaining` from older releases are ignored with a warning; the adaptive algorithm replaced all selection modes. The TUI Settings tab writes the whole file, so comments and unknown keys are not preserved.
 

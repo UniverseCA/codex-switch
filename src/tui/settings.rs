@@ -22,6 +22,7 @@ enum Focus {
     SafetyMargin,
     TeamPriority,
     RestartAppServer,
+    SharedLocalResume,
 }
 
 const FOCUS_ORDER: &[Focus] = &[
@@ -33,6 +34,7 @@ const FOCUS_ORDER: &[Focus] = &[
     Focus::SafetyMargin,
     Focus::TeamPriority,
     Focus::RestartAppServer,
+    Focus::SharedLocalResume,
 ];
 
 pub struct SettingsState {
@@ -210,21 +212,22 @@ impl SettingsState {
                 self.draft.use_cfg.restart_app_server = !self.draft.use_cfg.restart_app_server;
                 self.dirty = true;
             }
+            Focus::SharedLocalResume => {
+                self.draft.launch.shared_local_resume = !self.draft.launch.shared_local_resume;
+                self.dirty = true;
+            }
             _ => self.begin_edit(),
         }
     }
 
     fn nudge(&mut self, delta: i32) {
-        match self.focus {
-            Focus::TeamPriority if delta != 0 => {
-                self.draft.use_cfg.team_priority = !self.draft.use_cfg.team_priority;
-                self.dirty = true;
-            }
-            Focus::RestartAppServer if delta != 0 => {
-                self.draft.use_cfg.restart_app_server = !self.draft.use_cfg.restart_app_server;
-                self.dirty = true;
-            }
-            _ => {}
+        if delta != 0
+            && matches!(
+                self.focus,
+                Focus::TeamPriority | Focus::RestartAppServer | Focus::SharedLocalResume
+            )
+        {
+            self.activate();
         }
     }
 
@@ -236,7 +239,7 @@ impl SettingsState {
             Focus::MaxConcurrent => self.draft.network.max_concurrent.to_string(),
             Focus::TuiRefresh => self.draft.tui.auto_refresh_interval_secs.to_string(),
             Focus::SafetyMargin => format_num(self.draft.use_cfg.safety_margin_7d),
-            Focus::TeamPriority | Focus::RestartAppServer => return,
+            Focus::TeamPriority | Focus::RestartAppServer | Focus::SharedLocalResume => return,
         };
         self.input = value;
         self.cursor = self.input.chars().count();
@@ -263,7 +266,7 @@ impl SettingsState {
             Focus::SafetyMargin => {
                 self.draft.use_cfg.safety_margin_7d = parse_f64(&raw, "use.safety_margin_7d")?;
             }
-            Focus::TeamPriority | Focus::RestartAppServer => {}
+            Focus::TeamPriority | Focus::RestartAppServer | Focus::SharedLocalResume => {}
         }
         self.dirty = true;
         Ok(())
@@ -386,6 +389,9 @@ fn field_hint(focus: Focus) -> &'static str {
         }
         Focus::RestartAppServer => {
             "After the live auth.json changes (use, TUI u, login), restart a running Codex\napp-server daemon so new sessions use the account. Interrupts turns in progress.\noff = leave the daemon alone and only show the manual command."
+        }
+        Focus::SharedLocalResume => {
+            "Show shared local history in /resume on supported Codex builds.\nEnable only for accounts allowed to share this Codex home."
         }
     }
 }
@@ -548,6 +554,15 @@ pub fn render_settings_tab(
         &mut line_focus,
         &mut focused_line,
     );
+    push_field(
+        settings,
+        Focus::SharedLocalResume,
+        "launch.shared_local_resume",
+        bool_label(settings.draft.launch.shared_local_resume).to_string(),
+        &mut lines,
+        &mut line_focus,
+        &mut focused_line,
+    );
     lines.push(Line::from(""));
     line_focus.push(None);
     if let Some(error) = &settings.error {
@@ -638,8 +653,12 @@ mod tests {
             team_priority: _,
             restart_app_server: _,
         } = use_cfg;
-        let crate::config::LaunchConfig { shared_paths: _ } = launch;
-        assert_eq!(FOCUS_ORDER.len(), 8);
+        let crate::config::LaunchConfig {
+            shared_paths: _,
+            shared_local_resume,
+        } = launch;
+        assert!(!shared_local_resume);
+        assert_eq!(FOCUS_ORDER.len(), 9);
     }
 
     fn type_value(settings: &mut SettingsState, value: &str) {
@@ -688,6 +707,8 @@ mod tests {
         type_value(&mut settings, "15");
         move_to(&mut settings, Focus::TeamPriority);
         settings.handle_key(KeyCode::Enter);
+        move_to(&mut settings, Focus::SharedLocalResume);
+        settings.handle_key(KeyCode::Enter);
         assert!(settings.is_dirty());
 
         match settings.try_save() {
@@ -707,6 +728,7 @@ mod tests {
         assert_eq!(loaded.tui.auto_refresh_interval_secs, 60);
         assert_eq!(loaded.use_cfg.safety_margin_7d, 15.0);
         assert!(loaded.use_cfg.team_priority);
+        assert!(loaded.launch.shared_local_resume);
         unsafe {
             match prev_cs {
                 Some(v) => std::env::set_var("CODEX_SWITCH_HOME", v),

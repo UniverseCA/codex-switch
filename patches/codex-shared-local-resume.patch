@@ -1,0 +1,106 @@
+diff --git a/codex-rs/features/src/lib.rs b/codex-rs/features/src/lib.rs
+index 1620efc..f1972dc 100644
+--- a/codex-rs/features/src/lib.rs
++++ b/codex-rs/features/src/lib.rs
+@@ -110,6 +110,8 @@ pub enum Feature {
+     DaybreakProgramPropagation,
+     /// Restrict CLI resume of attributed local threads to their creator.
+     CliResumeAccountCheck,
++    /// Include shared local history in the interactive resume picker.
++    SharedLocalResumeHistory,
+     /// Removed no-op; use `tui.fullscreen_transcript` instead.
+     TranscriptV2,
+     // Stable.
+@@ -1137,6 +1139,12 @@ pub const FEATURES: &[FeatureSpec] = &[
+         stage: Stage::UnderDevelopment,
+         default_enabled: false,
+     },
++    FeatureSpec {
++        id: Feature::SharedLocalResumeHistory,
++        key: "shared_local_resume_history",
++        stage: Stage::Stable,
++        default_enabled: false,
++    },
+     FeatureSpec {
+         id: Feature::DaemonAutoStart,
+         key: "daemon_auto_start",
+diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
+index 42bcbfb..d294aea 100644
+--- a/codex-rs/tui/src/resume_picker.rs
++++ b/codex-rs/tui/src/resume_picker.rs
+@@ -49,6 +49,7 @@ use codex_app_server_protocol::ThreadSortKey;
+ use codex_app_server_protocol::ThreadUnarchiveParams;
+ use codex_app_server_protocol::ThreadUnarchiveResponse;
+ use codex_config::types::SessionPickerViewMode;
++use codex_features::Feature;
+ use codex_protocol::ThreadId;
+ use codex_utils_path as path_utils;
+ use color_eyre::eyre::Result;
+@@ -423,6 +424,7 @@ impl ResumePickerAppServers {
+
+ struct AppServerPickerBackend {
+     uses_remote_filesystem: bool,
++    share_local_history: bool,
+     session: AppServerSession,
+     archive_request_handle: AppServerRequestHandle,
+     include_non_interactive: bool,
+@@ -442,14 +444,20 @@ fn resume_picker_backends(
+         .into_iter()
+         .map(|session| {
+             let is_displayed_owner = session.backend_id() == displayed_owner;
++            let uses_remote_workspace = session.uses_remote_workspace();
++            let uses_remote_filesystem = if is_displayed_owner {
++                uses_remote_filesystem
++            } else {
++                uses_remote_workspace
++            };
+             AppServerPickerBackend {
+-                uses_remote_filesystem: if is_displayed_owner {
+-                    uses_remote_filesystem
+-                } else {
+-                    session.uses_remote_workspace()
+-                },
++                uses_remote_filesystem,
++                share_local_history: !uses_remote_filesystem
++                    && !uses_remote_workspace
++                    && config.features.enabled(Feature::SharedLocalResumeHistory)
++                    && !config.features.enabled(Feature::CliResumeAccountCheck),
+                 archive_request_handle: session.request_handle(),
+-                config: (!session.uses_remote_workspace()).then(|| config.clone()),
++                config: (!uses_remote_workspace).then(|| config.clone()),
+                 session,
+                 include_non_interactive,
+                 raw_reasoning_visibility: raw_reasoning_visibility(config),
+@@ -910,6 +918,7 @@ fn spawn_app_server_page_loader(
+     spawn_app_server_page_loaders(
+         vec![AppServerPickerBackend {
+             uses_remote_filesystem,
++            share_local_history: false,
+             session: app_server,
+             archive_request_handle,
+             include_non_interactive,
+@@ -934,6 +943,7 @@ fn spawn_app_server_page_loaders(
+ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
+     let AppServerPickerBackend {
+         uses_remote_filesystem,
++        share_local_history,
+         session: app_server,
+         archive_request_handle,
+         include_non_interactive,
+@@ -964,7 +974,7 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
+                             unreachable!("catalog cursors never reach a source")
+                         }
+                     });
+-                    let params = thread_list_params(
++                    let mut params = thread_list_params(
+                         cursor,
+                         cwd_filter,
+                         request.status,
+@@ -973,6 +983,7 @@ fn spawn_app_server_source(backend: AppServerPickerBackend) -> sources::Source {
+                         include_non_interactive,
+                         matches!(request.mode, PageLoadMode::StateDbOnly),
+                     );
++                    params.current_account_only = !share_local_history;
+                     let page = tokio::select! {
+                         page = load_app_server_page(&mut app_server, params) => page,
+                         _ = bg_tx.closed() => continue,

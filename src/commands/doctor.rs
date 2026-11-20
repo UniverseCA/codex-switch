@@ -24,6 +24,21 @@ fn print_human_report(report: &DoctorReport) {
     println!("Currently aligned version: {}", report.aligned_version);
     println!("Note: {}", report.runtime_note);
     print_report("PATH CLI", &report.path_cli);
+    if let Some(launch) = &report.chatgpt_launch {
+        println!("Interactive ChatGPT launch:");
+        println!("  executable: {}", launch.executable.display());
+        println!("  version: {}", launch.version);
+        println!(
+            "  native shared local resume: {}",
+            if launch.native_shared_local_resume {
+                "enabled"
+            } else if launch.shared_local_resume_requested {
+                "unavailable (use codex-switch resume)"
+            } else {
+                "disabled"
+            }
+        );
+    }
     print_report("Desktop engine", &report.desktop_codex);
     if let Some(matches) = report.versions_match {
         println!("  CLI and desktop engine versions match: {matches}");

@@ -183,7 +183,7 @@ async fn launch_interactive(
     // Resolve and validate the exact executable once, before profile selection
     // can consume a reset card or provider launch can create a native run.
     let codex_command = ensure_codex_available()?;
-    crate::codex_compat::ensure_launch_version(&codex_command)?;
+    let official_version = crate::codex_compat::ensure_launch_version(&codex_command)?;
 
     let (args, shared_resume) = match mode {
         LaunchMode::Passthrough(args) => (args, None),
@@ -233,7 +233,34 @@ async fn launch_interactive(
     // this after both provider branches so provider keys remain independent.
     auth::ensure_file_credentials_store()?;
 
-    let forwarded = chatgpt_codex_argv(model, reasoning, args);
+    let mut forwarded = chatgpt_codex_argv(model, reasoning, args);
+    let interactive_local_launch = shared_resume.is_none()
+        && !json
+        && matches!(
+            codex_subcommand_index(&forwarded).map(|index| forwarded[index].as_str()),
+            None | Some("resume")
+        )
+        && !codex_argv_uses_remote(&forwarded);
+    let launch = crate::codex_compat::chatgpt_launch_engine(
+        codex_command,
+        &official_version,
+        interactive_local_launch && crate::config::get().launch.shared_local_resume,
+    );
+    let codex_command = launch.executable;
+    if launch.native_shared_local_resume {
+        forwarded.splice(
+            ..0,
+            [
+                "--enable".to_string(),
+                crate::codex_compat::SHARED_LOCAL_RESUME_FEATURE.to_string(),
+            ],
+        );
+    } else if launch.shared_local_resume_requested {
+        user_println(&format!(
+            "Native shared local history is unavailable in Codex {}; use codex-switch resume to browse it.",
+            launch.version
+        ));
+    }
 
     let mut revival_hint = None;
     let target_alias = match alias {
@@ -395,10 +422,18 @@ pub(crate) fn embedded_codex_argv(supports_no_daemon: bool, mut argv: Vec<String
 }
 
 fn codex_argv_selects_server(argv: &[String]) -> bool {
+    codex_argv_uses_remote(argv)
+        || codex_syntax_indices(argv)
+            .into_iter()
+            .any(|index| argv[index] == "--no-daemon")
+        || codex_subcommand_index(argv).is_some_and(|index| argv[index] == "agents")
+}
+
+fn codex_argv_uses_remote(argv: &[String]) -> bool {
     codex_syntax_indices(argv).into_iter().any(|index| {
         let arg = argv[index].as_str();
-        arg == "--no-daemon" || arg == "--remote" || arg.starts_with("--remote=")
-    }) || codex_subcommand_index(argv).is_some_and(|index| argv[index] == "agents")
+        arg == "--remote" || arg.starts_with("--remote=")
+    })
 }
 
 /// `--no-daemon` exists since Codex 0.156; an older Codex rejects unknown

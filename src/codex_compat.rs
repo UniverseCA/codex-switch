@@ -9,6 +9,7 @@ use serde::Serialize;
 pub(crate) const MINIMUM_CODEX_VERSION: &str = "0.165.0";
 pub(crate) const ALIGNED_CODEX_VERSION: &str = "0.165.0";
 pub(crate) const CLI_UPGRADE_NPM_COMMAND: &str = "npm install -g @openai/codex@latest";
+pub(crate) const SHARED_LOCAL_RESUME_FEATURE: &str = "shared_local_resume_history";
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -38,11 +39,75 @@ pub(crate) struct DoctorReport {
     pub aligned_version: &'static str,
     pub runtime_note: &'static str,
     pub path_cli: VersionReport,
+    pub chatgpt_launch: Option<ChatGptLaunchEngine>,
     pub desktop_codex: VersionReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub versions_match: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_relation: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ChatGptLaunchEngine {
+    pub executable: PathBuf,
+    pub version: String,
+    pub shared_local_resume_requested: bool,
+    pub native_shared_local_resume: bool,
+}
+
+pub(crate) fn chatgpt_launch_engine(
+    path_cli: PathBuf,
+    version: &Version,
+    shared_local_resume_requested: bool,
+) -> ChatGptLaunchEngine {
+    let mut launch = ChatGptLaunchEngine {
+        executable: path_cli,
+        version: version.to_string(),
+        shared_local_resume_requested,
+        native_shared_local_resume: false,
+    };
+    if !shared_local_resume_requested {
+        return launch;
+    }
+    if exposes_shared_local_resume(&launch.executable) {
+        launch.native_shared_local_resume = true;
+        return launch;
+    }
+
+    let binary = if cfg!(windows) { "codex.exe" } else { "codex" };
+    if let Ok(home) = crate::auth::app_home() {
+        let candidate = home
+            .join("engines")
+            .join(&launch.version)
+            .join("bin")
+            .join(binary);
+        if candidate.is_file()
+            && probe_executable(&candidate).version.as_ref() == Some(version)
+            && exposes_shared_local_resume(&candidate)
+        {
+            launch.executable = candidate;
+            launch.native_shared_local_resume = true;
+        }
+    }
+    launch
+}
+
+fn exposes_shared_local_resume(executable: &Path) -> bool {
+    let Ok(home) = tempfile::tempdir() else {
+        return false;
+    };
+    let mut command = Command::new(executable);
+    command
+        .args(["features", "list"])
+        .env("CODEX_HOME", home.path())
+        .env_remove("CODEX_SQLITE_HOME");
+    let Ok(output) = crate::app_server::output_with_timeout(command, VERSION_PROBE_TIMEOUT) else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(SHARED_LOCAL_RESUME_FEATURE))
 }
 
 #[derive(Debug)]
@@ -223,22 +288,42 @@ pub(crate) fn doctor_report(desktop_path: Option<&Path>) -> DoctorReport {
     };
     let ok = healthy(&path_cli)
         && (desktop_codex.status == CompatibilityStatus::NotChecked || healthy(&desktop_codex));
+    let chatgpt_launch = path_cli
+        .executable
+        .as_deref()
+        .zip(
+            path_cli
+                .version
+                .as_deref()
+                .and_then(|version| Version::parse(version).ok()),
+        )
+        .filter(|_| healthy(&path_cli))
+        .map(|(path, version)| {
+            chatgpt_launch_engine(
+                PathBuf::from(path),
+                &version,
+                crate::config::get().launch.shared_local_resume,
+            )
+        });
     DoctorReport {
         ok,
         minimum_version: MINIMUM_CODEX_VERSION,
         aligned_version: ALIGNED_CODEX_VERSION,
         runtime_note: "Matching engine versions indicate an aligned core; CLI and desktop can still expose different capabilities and use different app-server or daemon behavior.",
         path_cli,
+        chatgpt_launch,
         desktop_codex,
         versions_match,
         version_relation,
     }
 }
 
-pub(crate) fn ensure_launch_version(path: &Path) -> Result<()> {
+pub(crate) fn ensure_launch_version(path: &Path) -> Result<Version> {
     let probe = probe_executable(path);
-    if probe.meets_minimum() {
-        return Ok(());
+    if probe.meets_minimum()
+        && let Some(version) = &probe.version
+    {
+        return Ok(version.clone());
     }
     let report = probe.report();
     match report.status {

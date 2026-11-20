@@ -127,6 +127,8 @@ impl Default for UseConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LaunchConfig {
+    /// Enable shared local history in supported native Codex resume pickers.
+    pub shared_local_resume: bool,
     /// Extra top-level entries of the Codex home to share with every
     /// per-account launch home, on top of the built-in list (configuration,
     /// instructions, skills, plugins, sessions, history, …).
