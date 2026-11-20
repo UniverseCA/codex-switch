@@ -13,6 +13,7 @@
 **Changes**
 
 - `codex-switch resume <alias>` opens an interactive picker for shared local sessions and resumes the selection with the specified ChatGPT account. It works alongside the account-filtered native picker in Codex 0.170. Use `--all` for all working directories or `--search TITLE` to filter by title.
+- ChatGPT launches and the shared session picker resolve the original shared home when invoked from a shell that inherits a managed account's `CODEX_HOME`.
 - While a launched session runs and its account is also the current `use` account, the profile and the live `auth.json` are reconciled every few seconds (same account only, newer `last_refresh` wins), so plain `codex` and launched sessions on that account do not strand each other's rotated refresh token.
 - `codex logout` / `codex login` inside an account home is handled on the next launch: credentials for the same account are folded into the profile when newer, a different account is refused with instructions.
 - `rename` moves the account home with the profile. `--json launch` reports `codex_home`.

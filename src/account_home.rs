@@ -123,7 +123,7 @@ pub fn prepare(alias: &str) -> Result<AccountHome> {
     if !profile_auth.is_file() {
         return Err(crate::error::CsError::NotFound(alias.to_string()).into());
     }
-    let shared_home = absolute(&crate::auth::user_codex_home()?)?;
+    let shared_home = shared_home_for_launch()?;
     let codex_home = absolute(&account_home_path(alias)?)?;
     if codex_home.starts_with(&shared_home) || shared_home.starts_with(&codex_home) {
         anyhow::bail!(
@@ -154,6 +154,29 @@ pub fn prepare(alias: &str) -> Result<AccountHome> {
         codex_home,
         shared_home,
     })
+}
+
+fn shared_home_for_launch() -> Result<PathBuf> {
+    let home = absolute(&crate::auth::user_codex_home()?)?;
+    let managed_homes = absolute(&homes_dir()?)?;
+    if home.parent() != Some(managed_homes.as_path()) {
+        return Ok(home);
+    }
+
+    // A shell inside an account launch inherits its isolated CODEX_HOME.
+    // Recover the shared home from existing links, since the SQLite path can
+    // be overridden independently.
+    ["config.toml", "sessions", "session_index.jsonl"]
+        .into_iter()
+        .find_map(|name| {
+            let target = home.join(std::fs::read_link(home.join(name)).ok()?);
+            let root = target.parent()?;
+            (target.file_name()? == name
+                && !root.starts_with(&managed_homes)
+                && !managed_homes.starts_with(root))
+            .then(|| root.to_path_buf())
+        })
+        .with_context(|| format!("locating the shared Codex home from {}", home.display()))
 }
 
 /// Every shared entry name: the built-in lists, native config profiles found
@@ -449,6 +472,33 @@ mod tests {
                 env.codex().to_string_lossy().into_owned()
             ))
         );
+    }
+
+    #[test]
+    fn prepare_from_an_account_home_uses_the_original_shared_home() {
+        let env = TestEnv::new();
+        env.save_profile(
+            "work",
+            &auth("acct_w", "w@example.com", "r1", "2026-10-01T00:00:00Z"),
+        );
+        env.save_profile(
+            "personal",
+            &auth("acct_p", "p@example.com", "r2", "2026-10-01T00:00:00Z"),
+        );
+        let work = prepare("work").unwrap();
+        unsafe {
+            std::env::set_var("CODEX_HOME", &work.codex_home);
+            std::env::set_var("CODEX_SQLITE_HOME", env.home.path().join("separate-db"));
+        }
+
+        assert_eq!(prepare("work").unwrap().shared_home, env.codex());
+        let personal = prepare("personal").unwrap();
+        assert_eq!(personal.shared_home, env.codex());
+        assert_eq!(
+            std::fs::read_link(personal.codex_home.join("sessions")).unwrap(),
+            env.codex().join("sessions")
+        );
+        assert_eq!(personal.sqlite_env(), None);
     }
 
     #[test]
