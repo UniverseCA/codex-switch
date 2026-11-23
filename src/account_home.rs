@@ -156,7 +156,7 @@ pub fn prepare(alias: &str) -> Result<AccountHome> {
     })
 }
 
-fn shared_home_for_launch() -> Result<PathBuf> {
+pub(crate) fn shared_home_for_launch() -> Result<PathBuf> {
     let home = absolute(&crate::auth::user_codex_home()?)?;
     let managed_homes = absolute(&homes_dir()?)?;
     if home.parent() != Some(managed_homes.as_path()) {

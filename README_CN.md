@@ -37,7 +37,8 @@ codex-switch login        # 无浏览器服务器加 --device
 codex-switch tui          # 交互式仪表盘
 codex-switch use          # 自动选择并切换到最佳账号
 codex-switch launch       # 用最佳账号启动 Codex
-codex-switch resume work  # 浏览共享本地会话，选中后用 work 账号恢复
+codex-switch resume       # 选旧会话，自动使用该会话对应的账号
+codex-switch resume --last # 直接恢复当前目录最近更新的会话
 ```
 
 ![TUI](docs/tui.png)
@@ -58,7 +59,7 @@ codex-switch resume work  # 浏览共享本地会话，选中后用 work 账号�
 - CLI 与 TUI 展示主额度池和每个模型的独立额度池。
 - 自适应配速感知评分自动选号，并可直接用它启动 Codex。
 - 每个账号在自己的 Codex 目录（`$CODEX_SWITCH_HOME/homes/<账号>`）里启动，不再替换 `~/.codex/auth.json`，多个终端可以同时用不同账号；配置、skills、插件和会话仍然共享，会话可以换一个账号继续（`resume`）。
-- Codex 0.170 的原生 `/resume` 按当前账号筛选。用 `codex-switch resume <账号别名>` 浏览当前目录的跨账号本地会话，选中后以该账号恢复。`--all` 可查看其他目录，`--search "标题"` 可按会话标题筛选。
+- `codex-switch resume` 按标题列出当前目录的本地会话和已匹配的账号。`--last` 直接恢复最近更新的会话。优先使用本命令记录的最近恢复账号，其次匹配会话的创建者。无法确认账号时会提示选择，成功恢复后记住选择。用 `resume <账号别名>` 可以指定账号，`--all` 可查看其他目录，`--search "标题"` 可按标题筛选。
 - 装好兼容的 Codex 候选版后，在 Settings 中开启 `launch.shared_local_resume`，即可在新启动的 Codex 里直接用原生 `/resume` 浏览共享历史。`codex-switch doctor` 可查看实际启动的版本。[构建与验证](docs/native-shared-resume.md)
 - 切换账号后（`use`、TUI 的 `u`，或会激活凭据的 `login`），若 Codex app-server daemon（Codex 0.157+）正在运行，会执行 `codex app-server daemon restart`，让新会话使用所选账号；可用 `[use] restart_app_server = false` 关闭。ChatGPT 的 `launch` 在 Codex 支持时改为附加 `--no-daemon`。
 - 支持重置卡、一次性配额预热（`warmup`）、强制刷新额度（`list -f`）、JSON 输出和代理。TUI 的 Accounts 页在未勾选账号时用 `u` 切换选中账号并显示进度，`t` 开启当前会话自动刷新，账号菜单中的 `w` 执行一次性预热；不运行常驻服务。

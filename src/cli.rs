@@ -273,10 +273,13 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Browse shared local Codex sessions and resume one with a ChatGPT profile
+    /// Resume a local Codex session with its previous ChatGPT account
     Resume {
-        /// ChatGPT profile to resume with
-        alias: String,
+        /// Override the ChatGPT profile used to resume
+        alias: Option<String>,
+        /// Resume the most recently updated matching session
+        #[arg(long)]
+        last: bool,
         /// Include sessions from every working directory
         #[arg(long)]
         all: bool,

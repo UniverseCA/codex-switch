@@ -4139,7 +4139,7 @@ fn scan_live_runtime_ids(codex_home: &Path) -> LiveRuntimeScan {
     scan
 }
 
-fn read_rollout_metadata(path: &Path) -> Result<serde_json::Value> {
+pub(crate) fn read_rollout_metadata(path: &Path) -> Result<serde_json::Value> {
     // Codex writes session metadata as the first JSONL record. Its instructions
     // can exceed 8 KiB; read a complete record without reading the whole history.
     // A larger or truncated record remains unclassified and prevents cleanup.

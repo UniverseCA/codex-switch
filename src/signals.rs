@@ -13,6 +13,7 @@ use anyhow::Result;
 pub(crate) enum ShutdownSignal {
     Interrupt,
     Terminate,
+    Hangup,
 }
 
 impl ShutdownSignal {
@@ -20,6 +21,7 @@ impl ShutdownSignal {
         match self {
             Self::Interrupt => 130,
             Self::Terminate => 143,
+            Self::Hangup => 129,
         }
     }
 }
@@ -28,6 +30,8 @@ impl ShutdownSignal {
 pub(crate) struct ShutdownListener {
     #[cfg(unix)]
     sigterm: Option<tokio::signal::unix::Signal>,
+    #[cfg(unix)]
+    sighup: Option<tokio::signal::unix::Signal>,
     #[cfg(unix)]
     sigint: tokio::signal::unix::Signal,
     #[cfg(not(unix))]
@@ -38,7 +42,11 @@ impl ShutdownListener {
     /// SIGTERM and SIGINT (Ctrl+C on Windows), for a process that owns its own
     /// lifetime and should shut down cleanly on either.
     pub(crate) fn new() -> Result<Self> {
-        Self::build(true)
+        Self::build(true, false)
+    }
+
+    pub(crate) fn for_launch(record_resume: bool) -> Result<Self> {
+        Self::build(true, record_resume)
     }
 
     /// Ctrl+C only.
@@ -49,16 +57,19 @@ impl ShutdownListener {
     /// after the critical section the command would go on ignoring `kill` for
     /// as long as it lives.
     pub(crate) fn interrupt_only() -> Result<Self> {
-        Self::build(false)
+        Self::build(false, false)
     }
 
-    fn build(include_terminate: bool) -> Result<Self> {
+    fn build(include_terminate: bool, include_hangup: bool) -> Result<Self> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
             Ok(Self {
                 sigterm: include_terminate
                     .then(|| signal(SignalKind::terminate()))
+                    .transpose()?,
+                sighup: include_hangup
+                    .then(|| signal(SignalKind::hangup()))
                     .transpose()?,
                 sigint: signal(SignalKind::interrupt())?,
             })
@@ -67,7 +78,7 @@ impl ShutdownListener {
         {
             // Windows has no SIGTERM; console Ctrl+C is the only equivalent, so
             // both constructors listen for the same thing.
-            let _ = include_terminate;
+            let _ = (include_terminate, include_hangup);
             Ok(Self {
                 ctrl_c: tokio::signal::windows::ctrl_c()?,
             })
@@ -84,11 +95,19 @@ impl ShutdownListener {
     pub(crate) async fn recv_signal(&mut self) -> ShutdownSignal {
         #[cfg(unix)]
         {
+            let sighup = async {
+                if let Some(signal) = self.sighup.as_mut() {
+                    signal.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
             match self.sigterm.as_mut() {
                 Some(sigterm) => {
                     tokio::select! {
                         _ = sigterm.recv() => ShutdownSignal::Terminate,
                         _ = self.sigint.recv() => ShutdownSignal::Interrupt,
+                        _ = sighup => ShutdownSignal::Hangup,
                     }
                 }
                 // `None` only means the stream ended, which tokio does not do

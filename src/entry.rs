@@ -239,8 +239,14 @@ async fn dispatch(
                 .await?
         }
         Commands::Tui => tui::run_tui().await?,
-        Commands::Resume { alias, all, search } => {
-            crate::launch::resume_cmd(&alias, all, search, json).await?;
+        Commands::Resume {
+            alias,
+            all,
+            last,
+            search,
+        } => {
+            let options = crate::resume::Options { all, last, search };
+            crate::launch::resume_cmd(alias.as_deref(), options, json).await?;
         }
         Commands::Open => commands::open_cmd()?,
         Commands::Provider(sub) => commands::provider_cmd(sub, json).await?,

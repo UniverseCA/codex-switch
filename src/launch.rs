@@ -16,7 +16,7 @@ pub(crate) enum TuiLaunchOutcome {
 
 enum LaunchMode {
     Passthrough(Vec<String>),
-    SharedResume { all: bool, search: Option<String> },
+    SharedResume(resume::Options),
 }
 
 fn shutdown_outcome(signal: ShutdownSignal, cleanup: Result<()>) -> TuiLaunchOutcome {
@@ -129,9 +129,8 @@ pub(crate) async fn launch_cmd(
 }
 
 pub(crate) async fn resume_cmd(
-    alias: &str,
-    all: bool,
-    search: Option<String>,
+    alias: Option<&str>,
+    options: resume::Options,
     json: bool,
 ) -> Result<()> {
     anyhow::ensure!(
@@ -140,8 +139,8 @@ pub(crate) async fn resume_cmd(
     );
     finish_launch_cli(
         launch_interactive(
-            Some(alias),
-            LaunchMode::SharedResume { all, search },
+            alias,
+            LaunchMode::SharedResume(options),
             false,
             false,
             None,
@@ -187,7 +186,7 @@ async fn launch_interactive(
 
     let (args, shared_resume) = match mode {
         LaunchMode::Passthrough(args) => (args, None),
-        LaunchMode::SharedResume { all, search } => (Vec::new(), Some((all, search))),
+        LaunchMode::SharedResume(options) => (Vec::new(), Some(options)),
     };
 
     // A custom API provider profile takes a separate, simpler path: it has no
@@ -262,8 +261,44 @@ async fn launch_interactive(
         ));
     }
 
+    let selected_resume = if let Some(options) = shared_resume {
+        let aliases = profile::list_profiles()?;
+        anyhow::ensure!(
+            !aliases.is_empty(),
+            "No saved ChatGPT profiles. Add one with `codex-switch login`."
+        );
+        if let Some(alias) = alias {
+            anyhow::ensure!(
+                aliases.iter().any(|saved| saved == alias),
+                "profile '{alias}' not found"
+            );
+        }
+        let shared_home = crate::account_home::shared_home_for_launch()?;
+        let listing_home = crate::account_home::AccountHome {
+            codex_home: shared_home.clone(),
+            shared_home,
+        };
+        let Some(selection) =
+            resume::pick(&codex_command, &listing_home, &aliases, alias, options).await?
+        else {
+            return Ok(TuiLaunchOutcome::Exited(0));
+        };
+        forwarded = vec!["resume".to_owned(), selection.id.clone()];
+        if selection.cwd.is_absolute() && selection.cwd.is_dir() {
+            forwarded.push("--cd".to_owned());
+            forwarded.push(selection.cwd.to_string_lossy().into_owned());
+        }
+        Some(selection)
+    } else {
+        None
+    };
+
     let mut revival_hint = None;
-    let target_alias = match alias {
+    let target_alias = match selected_resume
+        .as_ref()
+        .map(|selection| selection.alias.as_str())
+        .or(alias)
+    {
         Some(alias) => {
             let profiles = profile::list_profiles()?;
             if !profiles.iter().any(|profile| profile == alias) {
@@ -303,15 +338,6 @@ async fn launch_interactive(
             .context("account home task panicked")?
             .with_context(|| format!("preparing the Codex home for profile '{target_alias}'"))?
     };
-    let forwarded = if let Some((all, search)) = shared_resume {
-        let Some(id) = resume::pick(&codex_command, &account_home, all, search.as_deref()).await?
-        else {
-            return Ok(TuiLaunchOutcome::Exited(0));
-        };
-        vec!["resume".to_string(), id]
-    } else {
-        forwarded
-    };
     let forwarded = embedded_codex_argv(use_embedded, forwarded);
     sync_live_auth(&target_alias).await;
 
@@ -319,7 +345,7 @@ async fn launch_interactive(
     let interrupt = match tui_shutdown {
         Some(shutdown) => shutdown,
         None => {
-            owned_shutdown = ShutdownListener::new()
+            owned_shutdown = ShutdownListener::for_launch(selected_resume.is_some())
                 .context("registering shutdown handlers for the launched Codex")?;
             &mut owned_shutdown
         }
@@ -329,6 +355,7 @@ async fn launch_interactive(
         user_println(&format!("Launching Codex with profile '{target_alias}'..."));
     }
 
+    let opened_at = chrono::Utc::now().timestamp_micros();
     let mut child = spawn_codex(
         &codex_command,
         &forwarded,
@@ -344,10 +371,20 @@ async fn launch_interactive(
         Ok(status) => status,
         Err(signal) => {
             terminate_child(&mut child, pipes);
+            if signal == ShutdownSignal::Hangup {
+                remember_resume(selected_resume, opened_at);
+            }
             sync_live_auth(&target_alias).await;
             return Ok(shutdown_outcome(signal, Ok(())));
         }
     };
+    #[cfg(unix)]
+    let hung_up = std::os::unix::process::ExitStatusExt::signal(&status) == Some(libc::SIGHUP);
+    #[cfg(not(unix))]
+    let hung_up = false;
+    if status.success() || hung_up {
+        remember_resume(selected_resume, opened_at);
+    }
     // Fold in a refresh Codex made just before exiting.
     sync_live_auth(&target_alias).await;
     let captured = join_codex_pipes(pipes);
@@ -379,6 +416,14 @@ async fn launch_interactive(
     }
 
     Ok(TuiLaunchOutcome::Exited(exit_code))
+}
+
+fn remember_resume(selection: Option<resume::Selection>, opened_at: i64) {
+    if let Some(selection) = selection
+        && let Err(error) = selection.remember(opened_at)
+    {
+        eprintln!("Could not save the account used to resume this session: {error:#}");
+    }
 }
 
 /// Codex argv for a ChatGPT `launch`: optional `--model` and one-shot
